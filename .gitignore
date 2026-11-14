@@ -1,0 +1,10 @@
+bin/
+obj/
+*.user
+.vs/
+.vscode/
+.idea/
+
+# Local secrets (passwords, tokens, connection strings)
+.env
+appsettings.Local.json
