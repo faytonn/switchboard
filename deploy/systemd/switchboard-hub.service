@@ -1,0 +1,28 @@
+# Switchboard hub as a systemd *user* service, for a Linux server or Raspberry Pi.
+# Not used on Windows (see deploy/windows). Same entry point: scripts/serve.sh.
+#
+# Install (as the user that is logged in to Claude Code, with the repo at ~/switchboard):
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/systemd/switchboard-hub.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now switchboard-hub
+#   sudo loginctl enable-linger "$USER"    # keep user services running after you log out
+# Logs: journalctl --user -u switchboard-hub -f
+
+[Unit]
+Description=Switchboard hub
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/switchboard
+ExecStart=%h/switchboard/scripts/serve.sh
+Restart=on-failure
+RestartSec=10
+# The hub stops sessions' processes only when asked; tmux and Claude Code must survive a hub
+# restart, so don't kill the whole process group.
+KillMode=process
+
+[Install]
+WantedBy=default.target

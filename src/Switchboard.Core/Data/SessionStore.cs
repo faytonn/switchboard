@@ -24,13 +24,16 @@ public sealed record SessionRow(
     short? Color = null,
     string? Model = null,
     string? Effort = null,
-    bool Connectors = false);
+    bool Connectors = false,
+    string? PermissionMode = null,
+    DateTimeOffset? ConversationStartedAt = null);
 
 /// <summary>The sessions table: which session ids exist, their role, and whether they run.</summary>
 public sealed class SessionStore(NpgsqlDataSource db)
 {
     private const string Columns =
-        "id, project_dir, tmux_target, status, role, created_at, started_at, stopped_at, icon, color, model, effort, connectors";
+        "id, project_dir, tmux_target, status, role, created_at, started_at, stopped_at, icon, color, model, effort, connectors, " +
+        "permission_mode, conversation_started_at";
 
     /// <summary>
     /// Records a (re)start. Starting an id that ran before reuses its row, so the new run keeps
@@ -43,11 +46,15 @@ public sealed class SessionStore(NpgsqlDataSource db)
         string id, string projectDir, string tmuxTarget, string role, byte[]? tokenHash,
         string status = "starting", string? icon = null, string? guessedIcon = null, short? color = null,
         string? model = null, string? effort = null, bool connectors = false,
+        string? permissionMode = null, bool resumed = false,
         CancellationToken ct = default)
     {
+        // conversation_started_at: a fresh start (or a first start) begins a new conversation;
+        // a resumed one (--continue) keeps the old start time.
         await using var cmd = db.CreateCommand("""
-            insert into sessions (id, project_dir, tmux_target, status, role, token_hash, icon, color, model, effort, connectors)
-            values ($1, $2, $3, $4, $5, $6, coalesce($7, $8), $9, $10, $11, $12)
+            insert into sessions (id, project_dir, tmux_target, status, role, token_hash, icon, color, model, effort, connectors,
+                                  permission_mode, conversation_started_at)
+            values ($1, $2, $3, $4, $5, $6, coalesce($7, $8), $9, $10, $11, $12, $13, now())
             on conflict (id) do update
                set project_dir = excluded.project_dir,
                    tmux_target = excluded.tmux_target,
@@ -59,6 +66,8 @@ public sealed class SessionStore(NpgsqlDataSource db)
                    model       = excluded.model,
                    effort      = excluded.effort,
                    connectors  = excluded.connectors,
+                   permission_mode = excluded.permission_mode,
+                   conversation_started_at = case when $14 then coalesce(sessions.conversation_started_at, now()) else now() end,
                    started_at  = now(),
                    stopped_at  = null
             """);
@@ -74,6 +83,17 @@ public sealed class SessionStore(NpgsqlDataSource db)
         cmd.Parameters.Add(new() { NpgsqlDbType = NpgsqlDbType.Text, Value = (object?)model ?? DBNull.Value });
         cmd.Parameters.Add(new() { NpgsqlDbType = NpgsqlDbType.Text, Value = (object?)effort ?? DBNull.Value });
         cmd.Parameters.Add(new() { Value = connectors });
+        cmd.Parameters.Add(new() { NpgsqlDbType = NpgsqlDbType.Text, Value = (object?)permissionMode ?? DBNull.Value });
+        cmd.Parameters.Add(new() { Value = resumed });
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    /// <summary>The supervisor gave up: the session stays down until the owner restarts it.</summary>
+    public async Task MarkCrashedAsync(string id, CancellationToken ct = default)
+    {
+        await using var cmd = db.CreateCommand(
+            "update sessions set status = 'crashed', stopped_at = now(), token_hash = null where id = $1");
+        cmd.Parameters.Add(new() { Value = id });
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -144,7 +164,9 @@ public sealed class SessionStore(NpgsqlDataSource db)
                 Color: reader.IsDBNull(9) ? null : reader.GetInt16(9),
                 Model: reader.IsDBNull(10) ? null : reader.GetString(10),
                 Effort: reader.IsDBNull(11) ? null : reader.GetString(11),
-                Connectors: reader.GetBoolean(12)));
+                Connectors: reader.GetBoolean(12),
+                PermissionMode: reader.IsDBNull(13) ? null : reader.GetString(13),
+                ConversationStartedAt: reader.IsDBNull(14) ? null : reader.GetFieldValue<DateTimeOffset>(14)));
         }
 
         return list;

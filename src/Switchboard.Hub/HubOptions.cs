@@ -21,6 +21,26 @@ public sealed class HubOptions
     /// <summary>The built channel server that every session runs.</summary>
     public required string ChannelDll { get; init; }
 
+    /// <summary>Keep a manager session running (SWITCHBOARD_MANAGER_AUTOSTART, default true).</summary>
+    public bool ManagerAutostart { get; init; } = true;
+
+    /// <summary>
+    /// The manager's working folder (SWITCHBOARD_MANAGER_DIR, default ~/.switchboard/manager).
+    /// It must outlive reboots: Claude Code keys the conversation that --continue resumes to the
+    /// folder, so /tmp (wiped when WSL restarts) would lose it.
+    /// </summary>
+    public required string ManagerDir { get; init; }
+
+    /// <summary>Start the manager with a fresh conversation once its current one is this old.</summary>
+    public TimeSpan ManagerFreshAfter { get; init; } = TimeSpan.FromHours(24);
+
+    /// <summary>
+    /// Waits before restart attempts 1, 2, 3, 4... (the last value repeats). From
+    /// SWITCHBOARD_MANAGER_BACKOFF as comma-separated seconds; default 0,10,60,300.
+    /// </summary>
+    public IReadOnlyList<TimeSpan> ManagerBackoff { get; init; } =
+        [TimeSpan.Zero, TimeSpan.FromSeconds(10), TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(5)];
+
     public static HubOptions FromEnvironment()
     {
         var adminToken = Required("SWITCHBOARD_ADMIN_TOKEN");
@@ -30,12 +50,20 @@ public sealed class HubOptions
         }
 
         var root = FindRepoRoot();
+        var stateDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".switchboard");
+        var freshHours = int.TryParse(Environment.GetEnvironmentVariable("SWITCHBOARD_MANAGER_FRESH_HOURS"), out var h) && h > 0 ? h : 24;
         return new HubOptions
         {
+            ManagerAutostart = !string.Equals(Environment.GetEnvironmentVariable("SWITCHBOARD_MANAGER_AUTOSTART"), "false", StringComparison.OrdinalIgnoreCase),
+            ManagerDir = Environment.GetEnvironmentVariable("SWITCHBOARD_MANAGER_DIR") is { Length: > 0 } dir ? dir : Path.Combine(stateDir, "manager"),
+            ManagerFreshAfter = TimeSpan.FromHours(freshHours),
+            ManagerBackoff = Environment.GetEnvironmentVariable("SWITCHBOARD_MANAGER_BACKOFF") is { Length: > 0 } backoff
+                ? backoff.Split(',').Select(s => TimeSpan.FromSeconds(int.Parse(s.Trim(), System.Globalization.CultureInfo.InvariantCulture))).ToList()
+                : [TimeSpan.Zero, TimeSpan.FromSeconds(10), TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(5)],
             Url = Environment.GetEnvironmentVariable("SWITCHBOARD_HUB_URL") ?? "http://127.0.0.1:7700",
             AdminToken = adminToken,
             OwnerPasswordHash = Environment.GetEnvironmentVariable("SWITCHBOARD_OWNER_PASSWORD_HASH") is { Length: > 0 } hash ? hash : null,
-            StateDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".switchboard"),
+            StateDir = stateDir,
             ManagerDll = Path.Combine(root, "src", "Switchboard.Manager", "bin", "Debug", "net10.0", "Switchboard.Manager.dll"),
             ChannelDll = Path.Combine(root, "src", "Switchboard.Channel", "bin", "Debug", "net10.0", "Switchboard.Channel.dll"),
         };

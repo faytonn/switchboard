@@ -21,6 +21,7 @@ try
         ["read", var id, .. var opts] => await Read(id, opts),
         ["list", .. var opts] => await List(opts),
         ["stop", var id, .. var opts] => await Stop(id, opts),
+        ["restart", var id, .. var opts] => await Restart(id, opts),
         ["log", var id, .. var opts] => await Log(id, opts),
         ["search", .. var words] when words.Length > 0 => await Search(words),
         ["icons"] => await Icons(),
@@ -122,6 +123,18 @@ static async Task<int> Stop(string id, string[] opts)
     using var hub = new HubApi();
     await hub.PostAsync($"api/sessions/{id}/stop", new { force = opts.Contains("--force") });
     Console.WriteLine($"Stopped '{id}'.");
+    return 0;
+}
+
+static async Task<int> Restart(string id, string[] opts)
+{
+    var fresh = opts.Contains("--fresh");
+    using var hub = new HubApi();
+    Console.Error.WriteLine($"Restarting '{id}'...");
+    var result = await hub.PostAsync($"api/sessions/{id}/restart", new { fresh });
+    Console.WriteLine(result.GetProperty("resumed").GetBoolean()
+        ? $"Restarted '{id}' and resumed its conversation."
+        : $"Restarted '{id}' with a fresh conversation.");
     return 0;
 }
 
@@ -370,6 +383,8 @@ static int Usage()
           sb read   <id> [--lines N]   print the session's screen (+ N lines of scrollback)
           sb list   [--all]            list sessions (--all includes stopped ones)
           sb stop   <id> [--force]     /exit, then close the window
+          sb restart <id> [--fresh]    restart with the same settings, resuming the conversation
+                                       (--fresh starts a new one). Also revives a crashed manager.
           sb log    <id> [--limit N]   messages sent to or by a session (default 20)
           sb search <words...> [--session id] [--limit N]
                                        search all messages (default 10)

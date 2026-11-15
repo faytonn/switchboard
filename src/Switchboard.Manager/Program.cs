@@ -69,6 +69,9 @@ var options = new McpServerOptions
           The session then works on its own and answers with its reply tool. Its answer
           arrives in YOUR session as a channel message from="<its id>". Don't poll for it:
           end your turn, and you will be woken when the reply comes.
+        - The hub keeps you running: after a crash you are restarted with your conversation
+          resumed, and once a day you start with a fresh conversation. So don't rely on memory
+          for what's running: call list_sessions to see the sessions and their state.
         - When you start a session, give it an icon that matches its task (a booking system:
           ticket; a data pipeline: workflow; fixing a bug: bug). The owner sees it in the UI.
         - read_screen shows a session's terminal as text. Use it when a session seems stuck

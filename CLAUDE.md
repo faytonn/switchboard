@@ -90,6 +90,23 @@ Claude Code channels, and every message is stored in Postgres.
   the server instructions. The channel server therefore appends a one-line reminder to every
   pushed message ("Answer with the reply tool, to=..."). Keep it.
 
+## Always on
+
+- `ManagerSupervisor` (hub background service) keeps session `manager` running in
+  `SWITCHBOARD_MANAGER_DIR` (default `~/.switchboard/manager`, not /tmp: `--continue` is keyed
+  to the folder). It starts it when the hub starts and after it dies by itself, resuming with
+  `--continue`. A crash = row says `running` but no live window; a stop through the hub marks
+  the row `stopped` first and is left alone. Backoff 0/10/60/300s; after 4 failures in a row
+  the row becomes `crashed` and only the owner restarts it (`POST /api/sessions/{id}/restart`,
+  `sb restart`, UI Restart). Once a day, when idle 10 min, it starts the manager fresh.
+- `claude --continue` with no previous conversation prints "No conversation found to continue"
+  and exits 1; `SessionService` then starts fresh (not counted as a crash).
+- `scripts/serve.sh` is the single always-on entry point (waits for Postgres, builds, runs the
+  hub). Windows runs it from a logon task (`deploy/windows/install-task.ps1`); a Linux server
+  would use `deploy/systemd/switchboard-hub.service`. See `deploy/README.md`.
+- Test hubs: set `SWITCHBOARD_MANAGER_AUTOSTART=false` unless testing the supervisor, or they
+  start a manager of their own.
+
 ## Permission relay
 
 - The channel server also declares `claude/channel/permission`. Claude Code then sends it

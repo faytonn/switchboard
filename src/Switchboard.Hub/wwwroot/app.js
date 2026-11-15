@@ -111,6 +111,7 @@ function waitingCount(id) {
 function statusOf(s) {
   if (!s) return { key: 'off', text: 'unknown' };
   if (s.status === 'stopped') return { key: 'off', text: 'stopped' };
+  if (s.status === 'crashed') return { key: 'bad', text: 'crashed (restart it)' };
   if (s.window === 'exited') return { key: 'bad', text: `exited (${s.exitStatus ?? '?'})` };
   if (s.window === 'missing') return { key: 'bad', text: 'window missing' };
   if (s.status === 'starting') return { key: 'working', text: 'starting' };
@@ -252,8 +253,10 @@ function renderChatHeader() {
   // terminal if the prompt wasn't relayed (sessions started before the relay existed).
   $('chat-approval').hidden = status.key !== 'waiting';
 
-  const running = s.status !== 'stopped';
+  const running = s.status === 'running' || s.status === 'starting';
   $('stop-btn').hidden = !running;
+  // Down for any reason (stopped, crashed, Claude Code exited): offer a restart.
+  $('restart-btn').hidden = running && s.window === 'running';
   $('input').disabled = !running;
   $('send').disabled = !running;
   $('input').placeholder = running ? `Message ${s.id}` : 'This session is stopped';
@@ -455,6 +458,22 @@ async function stopCurrent() {
     toast(e.message);
   } finally {
     $('stop-btn').disabled = false;
+  }
+}
+
+async function restartCurrent() {
+  const id = state.current;
+  if (!id) return;
+  $('restart-btn').disabled = true;
+  toast(`Restarting ${id}… this takes up to a minute.`);
+  try {
+    const result = await api(`/api/sessions/${encodeURIComponent(id)}/restart`, { method: 'POST', body: { fresh: false } });
+    toast(result.resumed ? `${id} is back, with its previous conversation.` : `${id} is back, with a fresh conversation.`);
+    await loadSessions();
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    $('restart-btn').disabled = false;
   }
 }
 
@@ -841,6 +860,7 @@ $('composer').addEventListener('submit', sendMessage);
 $('input').addEventListener('keydown', onComposerKey);
 $('input').addEventListener('input', autosize);
 $('stop-btn').addEventListener('click', stopCurrent);
+$('restart-btn').addEventListener('click', restartCurrent);
 $('term-btn').addEventListener('click', toggleTerminal);
 $('term-refresh').addEventListener('click', refreshTerminal);
 $('chat-approval').addEventListener('click', focusApproval);

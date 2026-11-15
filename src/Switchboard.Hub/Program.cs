@@ -35,6 +35,7 @@ builder.Services.AddSingleton<IconGuesser>();
 builder.Services.AddSingleton<ActivityMonitor>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ActivityMonitor>());
 builder.Services.AddSingleton<SessionService>();
+builder.Services.AddHostedService<ManagerSupervisor>();
 builder.Services.AddSingleton<AgentAuthFilter>();
 builder.Services.AddOwnerLogin(options);
 builder.Services.AddRateLimiter(o =>
@@ -176,6 +177,11 @@ api.MapGet("/messages/search", (string q, string? session, int? limit, HttpConte
 
 api.MapGet("/sessions/{id}/screen", (string id, int? scrollback, HttpContext ctx, SessionService svc) =>
     svc.ReadScreenAsync(Caller.From(ctx), id, scrollback ?? 0, ctx.RequestAborted));
+
+// Restart with the same settings; resumes the conversation unless {"fresh": true}.
+// Also how the owner revives a session the supervisor marked crashed.
+api.MapPost("/sessions/{id}/restart", (string id, RestartRequest? req, HttpContext ctx, SessionService svc) =>
+    svc.RestartAsync(Caller.From(ctx), id, req?.Fresh ?? false, ctx.RequestAborted));
 
 api.MapPost("/sessions/{id}/stop", async (string id, StopSessionRequest? req, HttpContext ctx, SessionService svc) =>
 {

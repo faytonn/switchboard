@@ -12,7 +12,10 @@ namespace Switchboard.Hub;
 /// (Gmail, Notion, GitHub...). Off by default; only the owner can turn it on.</param>
 public sealed record StartSessionRequest(
     string Id, string ProjectDir, string? PermissionMode = null, bool Manager = false, string? Icon = null, short? Color = null,
-    string? Model = null, string? Effort = null, bool Connectors = false);
+    string? Model = null, string? Effort = null, bool Connectors = false, bool Resume = false);
+
+/// <param name="Fresh">true starts a new conversation instead of resuming the last one.</param>
+public sealed record RestartRequest(bool Fresh = false);
 
 /// <summary>The owner's choice in the UI's tile picker. null icon = initials, null color = automatic.</summary>
 public sealed record AppearanceRequest(string? Icon, short? Color);
@@ -51,7 +54,8 @@ public sealed record SessionInfo(
 public sealed record MessagePreview(string? From, string? To, string Body, DateTimeOffset CreatedAt);
 
 /// <param name="Dialogs">The startup dialogs we answered, e.g. ["folder trust", "development channels warning"].</param>
-public sealed record StartSessionResponse(SessionInfo Session, IReadOnlyList<string> Dialogs);
+/// <param name="Resumed">True if Claude Code continued the session's previous conversation.</param>
+public sealed record StartSessionResponse(SessionInfo Session, IReadOnlyList<string> Dialogs, bool Resumed = false);
 
 /// <param name="Delivered">True if the session's channel pushed it into Claude Code; false if
 /// it is queued (the channel is offline or slow) and will be delivered on reconnect.</param>

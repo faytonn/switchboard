@@ -8,7 +8,10 @@ namespace Switchboard.Core.Claude;
 /// <param name="Effort">How much Claude thinks before answering: low ... max.</param>
 /// <param name="Connectors">true also loads the owner's claude.ai connectors and plugin MCP
 /// servers; false passes --strict-mcp-config so only the --mcp-config servers load.</param>
-public sealed record ClaudeLaunch(string PermissionMode, string Model, string Effort, bool Connectors);
+/// <param name="Continue">--continue: resume the latest conversation in the project folder.
+/// Claude Code exits with "No conversation found to continue" if there is none, so callers
+/// must be ready to start fresh instead.</param>
+public sealed record ClaudeLaunch(string PermissionMode, string Model, string Effort, bool Connectors, bool Continue = false);
 
 /// <summary>Builds the command line that starts Claude Code in a session window.</summary>
 public static partial class ClaudeCommand
@@ -26,6 +29,9 @@ public static partial class ClaudeCommand
 
     /// <summary>The choices `claude --help` lists for --effort.</summary>
     public static readonly IReadOnlyList<string> EffortLevels = ["low", "medium", "high", "xhigh", "max"];
+
+    /// <summary>What Claude Code prints (then exits) when --continue finds nothing to resume.</summary>
+    public const string NoConversationToContinue = "No conversation found to continue";
 
     /// <summary>Model aliases Claude Code resolves to the latest model of that family.</summary>
     public static readonly IReadOnlyList<string> ModelAliases = ["opus", "sonnet", "haiku", "fable"];
@@ -76,6 +82,11 @@ public static partial class ClaudeCommand
         if (!launch.Connectors)
         {
             args.Add("--strict-mcp-config");
+        }
+
+        if (launch.Continue)
+        {
+            args.Add("--continue");
         }
 
         args.AddRange(extraArgs);

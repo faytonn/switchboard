@@ -64,8 +64,8 @@ public sealed class SessionService(
             PermissionMode: req.PermissionMode ?? ClaudeCommand.DefaultPermissionMode,
             Model: req.Model ?? (req.Manager ? "sonnet" : "opus"),
             Effort: req.Effort ?? "medium",
-            Connectors: req.Connectors);
-        var mode = launch.PermissionMode;
+            Connectors: req.Connectors,
+            Continue: req.Resume);
         var projectDir = WslPath.ToLinux(req.ProjectDir);
         ValidateAppearance(req.Icon, req.Color);
         // No icon given: guess one from the folder. It is only used if the session has none
@@ -78,6 +78,39 @@ public sealed class SessionService(
             throw HubException.Conflict($"Session '{req.Id}' is already running.");
         }
 
+        StartSessionResponse response;
+        try
+        {
+            response = await StartLockedAsync(req, role, launch, projectDir, guessedIcon, ct);
+        }
+        catch (NoConversationException)
+        {
+            // --continue found nothing to resume (a new folder, or Claude's history was cleared).
+            // That's not a crash: start a fresh conversation instead.
+            log.LogInformation("No conversation to resume for {Id}; starting fresh", req.Id);
+            response = await StartLockedAsync(req, role, launch with { Continue = false }, projectDir, guessedIcon, ct);
+        }
+
+        log.LogInformation("{Caller} started {Role} session {Id} in {Dir} ({Mode}, {Model}, effort {Effort}, connectors {Connectors}, resumed {Resumed})",
+            caller.Describe(), role, req.Id, projectDir, launch.PermissionMode, launch.Model, launch.Effort, launch.Connectors,
+            response.Resumed);
+        events.Publish("sessions", new { id = req.Id });
+        Started?.Invoke(req.Id);
+        return response;
+    }
+
+    /// <summary>Raised after a session started (by anyone). The manager supervisor listens.</summary>
+    public event Action<string>? Started;
+
+    /// <summary>Raised when the owner or the manager stops a session on purpose.</summary>
+    public event Action<string>? StoppedOnPurpose;
+
+    private sealed class NoConversationException() : Exception("No conversation to continue.");
+
+    // The actual start, with the session's lock held by the caller.
+    private async Task<StartSessionResponse> StartLockedAsync(
+        StartSessionRequest req, string role, ClaudeLaunch launch, string projectDir, string? guessedIcon, CancellationToken ct)
+    {
         // A fresh token per start. Claude Code passes it to the session's MCP servers through
         // their config file. The old run's token stops working because its hash is replaced.
         var token = Tokens.New();
@@ -106,7 +139,8 @@ public sealed class SessionService(
         // fails, we close the window and mark the row stopped.
         await sessions.MarkStartingAsync(req.Id, projectDir, tmux.DisplayTarget(req.Id), role, Tokens.Hash(token),
             icon: req.Icon, guessedIcon: guessedIcon, color: req.Color,
-            model: launch.Model, effort: launch.Effort, connectors: launch.Connectors, ct: ct);
+            model: launch.Model, effort: launch.Effort, connectors: launch.Connectors,
+            permissionMode: launch.PermissionMode, resumed: launch.Continue, ct: ct);
         // Prompts left over from a previous run of this id belong to a Claude Code that's gone.
         await permissions.ExpireForSessionAsync(req.Id, ct);
         IReadOnlyList<ClaudeDialog> answered;
@@ -125,16 +159,87 @@ public sealed class SessionService(
 
             await sessions.MarkRunningAsync(req.Id, ct);
         }
-        catch
+        catch (Exception e)
         {
+            // Read the screen before cleaning up: cleanup closes the window.
+            var noConversation = e is TmuxException && launch.Continue && await ExitedForLackOfConversationAsync(req.Id);
             await CleanUpFailedStartAsync(req.Id);
+            if (noConversation)
+            {
+                throw new NoConversationException();
+            }
+
             throw;
         }
 
-        log.LogInformation("{Caller} started {Role} session {Id} in {Dir} ({Mode}, {Model}, effort {Effort}, connectors {Connectors})",
-            caller.Describe(), role, req.Id, projectDir, mode, launch.Model, launch.Effort, launch.Connectors);
-        events.Publish("sessions", new { id = req.Id });
-        return new StartSessionResponse(await GetInfoAsync(req.Id, ct), answered.Select(d => d.Name).ToList());
+        return new StartSessionResponse(await GetInfoAsync(req.Id, ct), answered.Select(d => d.Name).ToList(), launch.Continue);
+    }
+
+    // Claude Code exited at once. Was it "No conversation found to continue"? The window is kept
+    // after exit (remain-on-exit), so its last words are still readable.
+    private async Task<bool> ExitedForLackOfConversationAsync(string id)
+    {
+        try
+        {
+            return (await tmux.ReadAsync(id, check: false)).Contains(ClaudeCommand.NoConversationToContinue, StringComparison.Ordinal);
+        }
+        catch (TmuxException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Restarts a session with the settings it last ran with. By default Claude Code resumes its
+    /// previous conversation (--continue); <paramref name="fresh"/> starts a new one.
+    /// </summary>
+    public async Task<StartSessionResponse> RestartAsync(Caller caller, string id, bool fresh, CancellationToken ct)
+    {
+        if (!caller.IsOwner)
+        {
+            throw HubException.Forbidden("Only the owner restarts sessions.");
+        }
+
+        SessionId.Validate(id);
+        var row = await sessions.GetAsync(id, ct) ?? throw HubException.NotFound($"No session named '{id}'.");
+        var request = ToRequest(row, resume: !fresh);
+        if (id == ManagerSupervisor.ManagerId && options.ManagerAutostart)
+        {
+            // The supervised manager always lives in its permanent folder.
+            request = request with { ProjectDir = options.ManagerDir };
+            Directory.CreateDirectory(options.ManagerDir);
+        }
+
+        await ShutDownAsync(id, TimeSpan.FromSeconds(5), ct);
+        return await StartAsync(caller, request, ct);
+    }
+
+    /// <summary>A start request that repeats how a session last ran.</summary>
+    public static StartSessionRequest ToRequest(SessionRow row, bool resume) => new(
+        row.Id,
+        row.ProjectDir,
+        PermissionMode: row.PermissionMode,
+        Manager: row.Role == SessionRoles.Manager,
+        Model: row.Model,
+        Effort: row.Effort,
+        Connectors: row.Connectors,
+        Resume: resume);
+
+    /// <summary>
+    /// Closes the session's window (if any) and marks it stopped, without the permission checks
+    /// or the "stopped on purpose" signal. Used by restarts and the supervisor.
+    /// </summary>
+    public async Task ShutDownAsync(string id, TimeSpan grace, CancellationToken ct)
+    {
+        using var _ = await LockAsync(id, ct);
+        if (await tmux.FindAsync(id, ct) is { } window)
+        {
+            await tmux.StopAsync(id, window.Dead ? TimeSpan.Zero : grace, ct);
+        }
+
+        await sessions.MarkStoppedAsync(id, ct);
+        await permissions.ExpireForSessionAsync(id, ct);
+        DeleteConfig(id);
     }
 
     /// <summary>Owner or manager sends a message into a session through its channel.</summary>
@@ -291,6 +396,7 @@ public sealed class SessionService(
         DeleteConfig(id);
         log.LogInformation("{Caller} stopped session {Id}", caller.Describe(), id);
         events.Publish("sessions", new { id });
+        StoppedOnPurpose?.Invoke(id);
     }
 
     private async Task<SessionInfo> GetInfoAsync(string id, CancellationToken ct)
@@ -321,7 +427,7 @@ public sealed class SessionService(
         SessionId.Validate(id);
         var row = await sessions.GetAsync(id, ct);
         var window = await tmux.FindAsync(id, ct);
-        if (row is null || row.Status == "stopped" || window is null)
+        if (row is null || row.Status is "stopped" or "crashed" || window is null)
         {
             throw HubException.NotFound($"Session '{id}' is not running.");
         }
