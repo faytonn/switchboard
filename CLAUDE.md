@@ -39,7 +39,9 @@ Claude Code channels, and every message is stored in Postgres.
 
 - Run it with `scripts/run-hub.sh` (builds the solution, loads `.env`, listens on
   `SWITCHBOARD_HUB_URL`, default `http://127.0.0.1:7700`). It applies migrations on startup.
-- The hub owns sessions. `sb` still talks to tmux directly and is a low-level debug tool.
+- The hub owns sessions. `sb` is a hub client (admin token from `.env`) for start, send, read,
+  list, stop, log and search, so there is one way to start sessions and deliver messages.
+  Only `sb trust|keys|wait` talk to tmux directly, for debugging a stuck session.
 - Auth: every `/api` call needs `Authorization: Bearer <token>`. The admin token
   (`SWITCHBOARD_ADMIN_TOKEN`) is the owner. Each session gets a fresh token per start, stored
   only as a SHA-256 hash in `sessions.token_hash`, and revoked on stop. The caller's identity
@@ -74,7 +76,21 @@ Claude Code channels, and every message is stored in Postgres.
   duplicate is possible after a dropped connection.
 - Replies go out through the `reply` tool (HTTP `POST /api/channel/reply`): to `owner`, or to a
   session that has messaged the caller.
-- `sb start` doesn't add the channel. It is a low-level tmux debug tool; start real sessions
-  through the hub.
 - MCP stdio servers must write logs to stderr only. stdout is the protocol.
+
+## Web UI
+
+- Static files in `src/Switchboard.Hub/wwwroot` (plain HTML/CSS/JS, no build step). Put session
+  text on the page with `textContent` only, never `innerHTML`. The CSP allows no inline scripts
+  or styles, so don't add `<script>` blocks or `style="..."` attributes.
+- Owner login: `./sb passwd` stores a PBKDF2 hash in `.env` (`SWITCHBOARD_OWNER_PASSWORD_HASH`);
+  restart the hub after. Cookie `sb_auth`: HttpOnly, SameSite=Strict, 12h sliding, or 30 days
+  with "remember me". A password change invalidates all cookies (stamp claim). Login is
+  rate-limited to 5 tries a minute per address.
+- Cookie-authenticated writes need the `X-Switchboard` header (CSRF guard); bearer calls don't.
+- Live updates: `GET /api/events` (SSE): `hello`, `message`, `delivered`, `sessions`, `ping`.
+  Events are hints; the page reloads from the API on every (re)connect.
+- Phone access: `tailscale serve` on Windows proxies to `127.0.0.1:7700`, which WSL's
+  localhost forwarding passes to the hub. The hub stays bound to loopback. Never use
+  `tailscale funnel` (that would put it on the public internet).
 - Docs: https://code.claude.com/docs/en/channels and https://code.claude.com/docs/en/channels-reference

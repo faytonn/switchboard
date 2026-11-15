@@ -1,137 +1,231 @@
 using System.Globalization;
-using Npgsql;
+using System.Text;
+using System.Text.Json;
+using Switchboard.Cli;
 using Switchboard.Core;
 using Switchboard.Core.Claude;
-using Switchboard.Core.Data;
+using Switchboard.Core.Security;
 using Switchboard.Core.Tmux;
 
-// `sb` is a small command-line tool for driving sessions by hand. Phase 1 uses it to test
-// tmux control, phase 2 adds message logging. Later phases reuse the same Core classes
-// from the hub.
-
-var tmux = TmuxClient.FromEnvironment();
-
-// Postgres is optional for the tmux commands: without SWITCHBOARD_DB they still work but log
-// nothing. The ./sb script loads SWITCHBOARD_DB from .env.
-var connectionString = Environment.GetEnvironmentVariable("SWITCHBOARD_DB");
-await using var db = string.IsNullOrWhiteSpace(connectionString) ? null : NpgsqlDataSource.Create(connectionString);
-var sessions = db is null ? null : new SessionStore(db);
-var messages = db is null ? null : new MessageStore(db);
+// `sb` is the owner's command-line client. Session commands go through the hub's API (with
+// the admin token), so every session gets a channel, and every message is saved and delivered
+// the same way, whether it comes from sb, the web UI or the manager.
+// The "debug" commands still talk to tmux directly, for looking at a stuck session.
 
 try
 {
     return args switch
     {
-        ["start", var id, var dir, .. var rest] => await Start(id, dir, rest),
-        ["trust", var id, .. var opts] => await Trust(id, opts),
+        ["start", var id, var dir, .. var opts] => await Start(id, dir, opts),
         ["send", var id, .. var words] when words.Length > 0 => await Send(id, words),
-        ["keys", var id, .. var keys] when keys.Length > 0 => await Keys(id, keys),
         ["read", var id, .. var opts] => await Read(id, opts),
-        ["wait", var id, var text, .. var opts] => await Wait(id, text, opts),
-        ["list"] => await List(),
+        ["list", .. var opts] => await List(opts),
         ["stop", var id, .. var opts] => await Stop(id, opts),
-        ["migrate"] => await Migrate(),
         ["log", var id, .. var opts] => await Log(id, opts),
         ["search", .. var words] when words.Length > 0 => await Search(words),
+        ["passwd"] => Passwd(),
+        ["trust", var id, .. var opts] => await Trust(id, opts),
+        ["keys", var id, .. var keys] when keys.Length > 0 => await Keys(id, keys),
+        ["wait", var id, var text, .. var opts] => await Wait(id, text, opts),
         _ => Usage(),
     };
 }
-catch (Exception e) when (e is TmuxException or ArgumentException)
+catch (Exception e) when (e is CliException or TmuxException or ArgumentException)
 {
     Console.Error.WriteLine($"error: {e.Message}");
     return 1;
 }
-catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UndefinedTable)
-{
-    Console.Error.WriteLine("error: the database has no Switchboard tables yet. Run: ./sb migrate");
-    return 1;
-}
-catch (NpgsqlException e)
-{
-    Console.Error.WriteLine($"error: database: {e.Message}");
-    Console.Error.WriteLine("Is Postgres running? Try: docker compose up -d");
-    return 1;
-}
 
-async Task<int> Start(string id, string dir, string[] rest)
+static async Task<int> Start(string id, string dir, string[] opts)
 {
-    // Options come first; everything after "--" is passed to claude,
-    // e.g. `sb start demo ~/proj --mode plan -- --model sonnet`.
-    var split = Array.IndexOf(rest, "--");
-    var opts = split < 0 ? rest : rest[..split];
-    string[] claudeArgs = split < 0 ? [] : rest[(split + 1)..];
-    var unknown = opts.Where((o, i) => o != "--mode" && (i == 0 || opts[i - 1] != "--mode")).ToList();
-    if (unknown.Count > 0)
+    RejectUnknown(opts, valueOptions: ["--mode"], flags: ["--manager"]);
+    SessionId.Validate(id);
+    var mode = StringOption(opts, "--mode");
+    var manager = opts.Contains("--manager");
+    using var hub = new HubApi();
+
+    Console.Error.WriteLine($"Starting '{id}' (this waits until its channel is connected)...");
+    var result = await hub.PostAsync("api/sessions", new { id, projectDir = dir, permissionMode = mode, manager });
+    var session = result.GetProperty("session");
+    var dialogs = result.GetProperty("dialogs").EnumerateArray().Select(d => d.GetString()).ToList();
+    Console.WriteLine($"Started {session.GetProperty("role").GetString()} '{id}' in {session.GetProperty("projectDir").GetString()}, channel connected.");
+    if (dialogs.Count > 0)
     {
-        throw new ArgumentException($"Unknown option '{unknown[0]}'. Put claude arguments after --.");
+        Console.WriteLine($"Answered: {string.Join(", ", dialogs)}");
     }
 
-    var mode = StringOption(opts, "--mode") ?? ClaudeCommand.DefaultPermissionMode;
-    var projectDir = WslPath.ToLinux(dir);
-
-    await tmux.StartAsync(id, projectDir, ClaudeCommand.Build(mode, claudeArgs));
-    if (sessions is not null)
-    {
-        // Sessions started by sb get no hub token: they have no MCP tools that call the hub.
-        await sessions.MarkStartingAsync(id, projectDir, tmux.DisplayTarget(id), SessionRoles.Worker, tokenHash: null, status: "running");
-    }
-    else
-    {
-        WarnNoDatabase();
-    }
-
-    Console.WriteLine($"Started '{id}' in {projectDir} (permission mode: {mode})");
-    Console.WriteLine($"If the folder is new to Claude Code, answer the trust dialog with: sb trust {id}");
-    Console.WriteLine($"Watch it live: tmux attach -t {tmux.SessionName}  (Ctrl-b w picks a window, Ctrl-b d detaches)");
+    Console.WriteLine("Watch it live: tmux attach -t switchboard  (Ctrl-b w picks a window, Ctrl-b d detaches)");
     return 0;
 }
 
-async Task<int> Trust(string id, string[] opts)
+static async Task<int> Send(string id, string[] words)
+{
+    // `sb send demo -` reads the message from stdin, which is handy for multi-line text.
+    var text = (words is ["-"] ? await Console.In.ReadToEndAsync() : string.Join(' ', words)).TrimEnd('\n');
+    using var hub = new HubApi();
+    var result = await hub.PostAsync($"api/sessions/{id}/messages", new { text });
+    var messageId = result.GetProperty("messageId").GetInt64();
+    Console.WriteLine(result.GetProperty("delivered").GetBoolean()
+        ? $"#{messageId} delivered to '{id}'. Replies show up in: ./sb log {id}"
+        : $"#{messageId} queued: '{id}' has no channel connection; it is delivered when it reconnects.");
+    return 0;
+}
+
+static async Task<int> Read(string id, string[] opts)
+{
+    var lines = IntOption(opts, "--lines") ?? 0;
+    using var hub = new HubApi();
+    var result = await hub.GetAsync($"api/sessions/{id}/screen?scrollback={lines}");
+    Console.WriteLine(result.GetProperty("screen").GetString());
+    return 0;
+}
+
+static async Task<int> List(string[] opts)
+{
+    var all = opts.Contains("--all");
+    using var hub = new HubApi();
+    var sessions = (await hub.GetAsync("api/sessions")).EnumerateArray()
+        .Where(s => all || s.GetProperty("status").GetString() != "stopped")
+        .ToList();
+    if (sessions.Count == 0)
+    {
+        Console.WriteLine(all ? "No sessions yet." : "No sessions running. (--all shows stopped ones)");
+        return 0;
+    }
+
+    Console.WriteLine($"{"ID",-18} {"ROLE",-8} {"STATUS",-9} {"CHANNEL",-8} {"IDLE",-6} DIR");
+    foreach (var s in sessions)
+    {
+        var idle = s.GetProperty("idleSeconds") is { ValueKind: JsonValueKind.Number } i ? FormatIdle(i.GetInt32()) : "-";
+        var channel = s.GetProperty("channel").GetBoolean() ? "on" : "off";
+        Console.WriteLine($"{s.GetProperty("id").GetString(),-18} {s.GetProperty("role").GetString(),-8} {s.GetProperty("status").GetString(),-9} {channel,-8} {idle,-6} {s.GetProperty("projectDir").GetString()}");
+    }
+
+    return 0;
+}
+
+static async Task<int> Stop(string id, string[] opts)
+{
+    using var hub = new HubApi();
+    await hub.PostAsync($"api/sessions/{id}/stop", new { force = opts.Contains("--force") });
+    Console.WriteLine($"Stopped '{id}'.");
+    return 0;
+}
+
+static async Task<int> Log(string id, string[] opts)
+{
+    var limit = IntOption(opts, "--limit") ?? 20;
+    using var hub = new HubApi();
+    var history = (await hub.GetAsync($"api/sessions/{id}/messages?limit={limit}")).EnumerateArray().ToList();
+    if (history.Count == 0)
+    {
+        Console.WriteLine($"No messages for '{id}'.");
+    }
+
+    history.ForEach(PrintMessage);
+    return 0;
+}
+
+static async Task<int> Search(string[] words)
+{
+    // `sb search <words...> [--session id] [--limit N]`: options may come anywhere.
+    var session = StringOption(words, "--session");
+    var limit = IntOption(words, "--limit") ?? 10;
+    var query = string.Join(' ', words.Where((w, i) =>
+        w is not ("--session" or "--limit") && (i == 0 || words[i - 1] is not ("--session" or "--limit"))));
+
+    using var hub = new HubApi();
+    var path = $"api/messages/search?q={Uri.EscapeDataString(query)}&limit={limit}" +
+               (session is null ? "" : $"&session={Uri.EscapeDataString(session)}");
+    var found = (await hub.GetAsync(path)).EnumerateArray().ToList();
+    Console.WriteLine(found.Count == 0 ? $"No messages match \"{query}\"." : $"{found.Count} match(es), best first:");
+    found.ForEach(PrintMessage);
+    return 0;
+}
+
+// Sets the web UI login password: asks for it twice without echo and stores only its hash
+// in .env. The hub reads it at startup, so restart the hub afterwards.
+static int Passwd()
+{
+    var envFile = Environment.GetEnvironmentVariable("SWITCHBOARD_ENV_FILE")
+        ?? throw new CliException("Run this through ./sb, which knows where .env is.");
+
+    var first = ReadSecret("New web UI password: ");
+    if (first.Length < 12)
+    {
+        throw new CliException("Use at least 12 characters. A long passphrase is easier to type on a phone than a short complicated password.");
+    }
+
+    if (ReadSecret("Repeat it: ") != first)
+    {
+        throw new CliException("The two passwords differ. Nothing changed.");
+    }
+
+    Console.Error.WriteLine("Hashing (this takes a moment on purpose)...");
+    // Single quotes keep bash and Docker Compose from reading anything in the value.
+    var line = $"SWITCHBOARD_OWNER_PASSWORD_HASH='{PasswordHash.Create(first)}'";
+    var lines = File.ReadAllLines(envFile).Where(l => !l.StartsWith("SWITCHBOARD_OWNER_PASSWORD_HASH=", StringComparison.Ordinal)).ToList();
+    lines.Add(line);
+    File.WriteAllLines(envFile, lines);
+    Console.WriteLine("Saved the password hash in .env. Restart the hub to use it; this also signs out every browser.");
+    return 0;
+}
+
+static string ReadSecret(string prompt)
+{
+    Console.Error.Write(prompt);
+    if (Console.IsInputRedirected)
+    {
+        return Console.ReadLine() ?? "";
+    }
+
+    // Read key by key with intercept: true, so the password never appears on screen.
+    var text = new StringBuilder();
+    while (true)
+    {
+        var key = Console.ReadKey(intercept: true);
+        if (key.Key == ConsoleKey.Enter)
+        {
+            Console.Error.WriteLine();
+            return text.ToString();
+        }
+
+        if (key.Key == ConsoleKey.Backspace)
+        {
+            if (text.Length > 0)
+            {
+                text.Length--;
+            }
+        }
+        else if (!char.IsControl(key.KeyChar))
+        {
+            text.Append(key.KeyChar);
+        }
+    }
+}
+
+// --- Debug commands: straight to tmux, for looking at or unsticking a session by hand. ---
+
+static async Task<int> Trust(string id, string[] opts)
 {
     var timeout = TimeSpan.FromSeconds(IntOption(opts, "--timeout") ?? 30);
-    var result = await new DialogConfirmer(tmux).ConfirmAsync(id, ClaudeDialog.FolderTrust, timeout);
+    var result = await new DialogConfirmer(TmuxClient.FromEnvironment()).ConfirmAsync(id, ClaudeDialog.FolderTrust, timeout);
     Console.WriteLine(result == ConfirmResult.Confirmed
         ? "Trust dialog was on screen: chose \"Yes, I trust this folder\"."
         : "No trust dialog: Claude Code is already at its prompt. Pressed nothing.");
     return 0;
 }
 
-async Task<int> Send(string id, string[] words)
+static async Task<int> Keys(string id, string[] keys)
 {
-    // `sb send demo -` reads the message from stdin, which is handy for multi-line text.
-    var text = (words is ["-"] ? await Console.In.ReadToEndAsync() : string.Join(' ', words)).TrimEnd('\n');
-    if (messages is null)
-    {
-        WarnNoDatabase();
-        await tmux.SendTextAsync(id, text);
-        return 0;
-    }
-
-    // Save first (delivered_at = null), deliver, then mark delivered. If tmux fails, the row
-    // stays and shows the message never arrived.
-    var message = await messages.AddAsync(from: null, to: id, text);
-    await tmux.SendTextAsync(id, text);
-    await messages.MarkDeliveredAsync(message.Id);
+    await TmuxClient.FromEnvironment().SendKeysAsync(id, keys);
     return 0;
 }
 
-async Task<int> Keys(string id, string[] keys)
-{
-    await tmux.SendKeysAsync(id, keys);
-    return 0;
-}
-
-async Task<int> Read(string id, string[] opts)
-{
-    var lines = IntOption(opts, "--lines") ?? 0;
-    Console.WriteLine(await tmux.ReadAsync(id, lines));
-    return 0;
-}
-
-async Task<int> Wait(string id, string text, string[] opts)
+static async Task<int> Wait(string id, string text, string[] opts)
 {
     var timeout = TimeSpan.FromSeconds(IntOption(opts, "--timeout") ?? 30);
-    if (await tmux.WaitForTextAsync(id, text, timeout))
+    if (await TmuxClient.FromEnvironment().WaitForTextAsync(id, text, timeout))
     {
         Console.WriteLine($"Found \"{text}\" on screen.");
         return 0;
@@ -141,112 +235,35 @@ async Task<int> Wait(string id, string text, string[] opts)
     return 1;
 }
 
-async Task<int> List()
+// --- Helpers ---
+
+static void PrintMessage(JsonElement m)
 {
-    var windows = await tmux.ListAsync();
-    if (windows.Count == 0)
-    {
-        Console.WriteLine("No sessions running.");
-        return 0;
-    }
-
-    Console.WriteLine($"{"ID",-20} {"STATE",-12} {"IDLE",-8} DIR");
-    foreach (var w in windows)
-    {
-        var state = w.Dead ? $"exited({w.ExitStatus})" : "running";
-        var idle = DateTimeOffset.UtcNow - w.LastActivity;
-        Console.WriteLine($"{w.Id,-20} {state,-12} {FormatIdle(idle),-8} {w.CurrentPath}");
-    }
-
-    return 0;
-}
-
-async Task<int> Stop(string id, string[] opts)
-{
-    var grace = opts.Contains("--force") ? TimeSpan.Zero : TimeSpan.FromSeconds(5);
-    await tmux.StopAsync(id, grace);
-    if (sessions is not null)
-    {
-        await sessions.MarkStoppedAsync(id);
-    }
-
-    Console.WriteLine($"Stopped '{id}'.");
-    return 0;
-}
-
-async Task<int> Migrate()
-{
-    var applied = await Migrator.MigrateAsync(RequireDatabase());
-    Console.WriteLine(applied.Count == 0
-        ? "Database is up to date."
-        : $"Applied: {string.Join(", ", applied)}");
-    return 0;
-}
-
-async Task<int> Log(string id, string[] opts)
-{
-    SessionId.Validate(id);
-    RequireDatabase();
-    var history = await messages!.HistoryAsync(id, IntOption(opts, "--limit") ?? 20);
-    if (history.Count == 0)
-    {
-        Console.WriteLine($"No messages for '{id}'.");
-    }
-
-    foreach (var m in history)
-    {
-        PrintMessage(m);
-    }
-
-    return 0;
-}
-
-async Task<int> Search(string[] words)
-{
-    // `sb search <words...> [--session id] [--limit N]`: options may come anywhere.
-    var session = StringOption(words, "--session");
-    var limit = IntOption(words, "--limit") ?? 10;
-    var query = string.Join(' ', words.Where((w, i) =>
-        w is not ("--session" or "--limit") && (i == 0 || words[i - 1] is not ("--session" or "--limit"))));
-    if (query.Length == 0)
-    {
-        throw new ArgumentException("Give some words to search for.");
-    }
-
-    if (session is not null)
-    {
-        SessionId.Validate(session);
-    }
-
-    RequireDatabase();
-    var found = await messages!.SearchAsync(query, session, limit);
-    Console.WriteLine(found.Count == 0 ? $"No messages match \"{query}\"." : $"{found.Count} match(es), best first:");
-    foreach (var m in found)
-    {
-        PrintMessage(m);
-    }
-
-    return 0;
-}
-
-NpgsqlDataSource RequireDatabase() =>
-    db ?? throw new ArgumentException("SWITCHBOARD_DB is not set. Run scripts/setup-env.sh, then use ./sb (it loads .env).");
-
-static void PrintMessage(Message m)
-{
-    var from = m.From ?? "you";
-    var to = m.To ?? "you";
-    var when = m.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
-    var state = m.DeliveredAt is null ? "  [not delivered]" : "";
-    Console.WriteLine($"#{m.Id}  {when}  {from} → {to}{state}");
-    foreach (var line in m.Body.Split('\n'))
+    var from = m.GetProperty("from").GetString() ?? "you";
+    var to = m.GetProperty("to").GetString() ?? "you";
+    var when = m.GetProperty("createdAt").GetDateTimeOffset().ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+    var state = m.GetProperty("deliveredAt").ValueKind == JsonValueKind.Null ? "  [not delivered]" : "";
+    Console.WriteLine($"#{m.GetProperty("id").GetInt64()}  {when}  {from} → {to}{state}");
+    foreach (var line in (m.GetProperty("body").GetString() ?? "").Split('\n'))
     {
         Console.WriteLine($"    {line}");
     }
 }
 
-static void WarnNoDatabase() =>
-    Console.Error.WriteLine("note: SWITCHBOARD_DB is not set, so nothing is saved to Postgres.");
+static void RejectUnknown(string[] opts, string[] valueOptions, string[] flags)
+{
+    for (var i = 0; i < opts.Length; i++)
+    {
+        if (valueOptions.Contains(opts[i]))
+        {
+            i++;
+        }
+        else if (!flags.Contains(opts[i]))
+        {
+            throw new ArgumentException($"Unknown option '{opts[i]}'.");
+        }
+    }
+}
 
 static string? StringOption(string[] opts, string name)
 {
@@ -275,33 +292,32 @@ static int? IntOption(string[] opts, string name)
     return value;
 }
 
-static string FormatIdle(TimeSpan t) =>
-    t.TotalSeconds < 60 ? $"{(int)t.TotalSeconds}s"
-    : t.TotalMinutes < 60 ? $"{(int)t.TotalMinutes}m"
-    : $"{(int)t.TotalHours}h";
+static string FormatIdle(int seconds) =>
+    seconds < 60 ? $"{seconds}s" : seconds < 3600 ? $"{seconds / 60}m" : $"{seconds / 3600}h";
 
 static int Usage()
 {
     Console.Error.WriteLine("""
-        Usage:
-          sb start <id> <project-dir> [--mode M] [-- <claude args>]
-                                                           start Claude Code in a new tmux window
-                                                           M: acceptEdits (default), auto, plan,
-                                                              manual, dontAsk, bypassPermissions
-          sb trust <id> [--timeout S]                      answer the folder trust dialog, only if it is on screen
-          sb send  <id> <text...>                          type a message and press Enter
-          sb send  <id> -                                  same, message read from stdin
-          sb keys  <id> <key...>                           press raw keys (careful: Up/Down at the prompt
-                                                           walk through message history)
-          sb read  <id> [--lines N]                        print the screen (+ N lines of scrollback)
-          sb wait  <id> <text> [--timeout S]               wait until text is on screen (default 30s)
-          sb list                                          list sessions
-          sb stop  <id> [--force]                          /exit, then close the window
+        Usage (session commands go through the hub: start it with scripts/run-hub.sh):
+          sb start  <id> <project-dir> [--mode M] [--manager]
+                                       start Claude Code with its channel; waits until connected
+                                       M: acceptEdits (default), auto, plan, manual, dontAsk,
+                                          bypassPermissions. --manager adds the manager tools.
+          sb send   <id> <text...>     send a message through the session's channel
+          sb send   <id> -             same, message read from stdin
+          sb read   <id> [--lines N]   print the session's screen (+ N lines of scrollback)
+          sb list   [--all]            list sessions (--all includes stopped ones)
+          sb stop   <id> [--force]     /exit, then close the window
+          sb log    <id> [--limit N]   messages sent to or by a session (default 20)
+          sb search <words...> [--session id] [--limit N]
+                                       search all messages (default 10)
+          sb passwd                    set the web UI login password (stored hashed in .env)
 
-        Postgres (needs SWITCHBOARD_DB, which ./sb loads from .env):
-          sb migrate                                       create or update the tables
-          sb log    <id> [--limit N]                       messages sent to or by a session (default 20)
-          sb search <words...> [--session id] [--limit N]  search all messages (default 10)
+        Debug (straight to tmux, for a stuck session):
+          sb trust <id> [--timeout S]  answer the folder trust dialog, only if it is on screen
+          sb keys  <id> <key...>       press raw keys (careful: Up/Down at the prompt walk
+                                       through message history)
+          sb wait  <id> <text> [--timeout S]  wait until text is on screen (default 30s)
 
         Session ids: lowercase letters, digits and hyphens. Quote Windows paths: 'C:\Users\me\proj'.
         """);

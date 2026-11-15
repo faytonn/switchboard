@@ -6,6 +6,7 @@ using Switchboard.Core.Data;
 using Switchboard.Core.Tmux;
 using Switchboard.Hub.Auth;
 using Switchboard.Hub.Channels;
+using Switchboard.Hub.Events;
 
 namespace Switchboard.Hub;
 
@@ -19,6 +20,7 @@ public sealed class SessionService(
     SessionStore sessions,
     MessageStore messages,
     ChannelHub channels,
+    HubEvents events,
     ILogger<SessionService> log)
 {
     // MCP server names inside a session. Claude Code names their tools after them, e.g.
@@ -103,6 +105,7 @@ public sealed class SessionService(
         }
 
         log.LogInformation("{Caller} started {Role} session {Id} in {Dir} ({Mode})", caller.Describe(), role, req.Id, projectDir, mode);
+        events.Publish("sessions", new { id = req.Id });
         return new StartSessionResponse(await GetInfoAsync(req.Id, ct), answered.Select(d => d.Name).ToList());
     }
 
@@ -117,6 +120,7 @@ public sealed class SessionService(
         // Save first (not delivered). The channel connection's delivery loop picks it up from
         // the database. If the channel is offline it simply waits there.
         var message = await messages.AddAsync(from: caller.SessionId, to: id, req.Text, ct);
+        events.Publish("message", message);
         var delivered = await channels.DeliverAndWaitAsync(id, message.Id, DeliveryTimeout, ct);
         return new SendMessageResponse(message.Id, delivered);
     }
@@ -131,6 +135,7 @@ public sealed class SessionService(
         {
             // The owner reads messages from the database, so storing it is delivering it.
             var toOwner = await messages.AddAsync(from, to: null, req.Text, deliveredNow: true, ct);
+            events.Publish("message", toOwner);
             return new SendMessageResponse(toOwner.Id, Delivered: true);
         }
 
@@ -148,6 +153,7 @@ public sealed class SessionService(
         }
 
         var message = await messages.AddAsync(from, req.To, req.Text, ct);
+        events.Publish("message", message);
         var delivered = await channels.DeliverAndWaitAsync(req.To, message.Id, DeliveryTimeout, ct);
         return new SendMessageResponse(message.Id, delivered);
     }
@@ -178,6 +184,22 @@ public sealed class SessionService(
         return await messages.HistoryAsync(id, Math.Clamp(limit, 1, 500), ct);
     }
 
+    public async Task<IReadOnlyList<Message>> SearchAsync(Caller caller, string query, string? sessionId, int limit, CancellationToken ct)
+    {
+        RequireControl(caller);
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            throw HubException.BadRequest("Give some words to search for.");
+        }
+
+        if (sessionId is not null)
+        {
+            SessionId.Validate(sessionId);
+        }
+
+        return await messages.SearchAsync(query, sessionId, Math.Clamp(limit, 1, 100), ct);
+    }
+
     public async Task StopAsync(Caller caller, string id, StopSessionRequest req, CancellationToken ct)
     {
         RequireControl(caller);
@@ -199,6 +221,7 @@ public sealed class SessionService(
         await sessions.MarkStoppedAsync(id, ct);
         DeleteConfig(id);
         log.LogInformation("{Caller} stopped session {Id}", caller.Describe(), id);
+        events.Publish("sessions", new { id });
     }
 
     private async Task<SessionInfo> GetInfoAsync(string id, CancellationToken ct)

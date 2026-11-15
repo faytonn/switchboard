@@ -9,7 +9,10 @@ public sealed class HubOptions
     /// <summary>The owner's token for scripts and curl. Requests with it act as the owner.</summary>
     public required string AdminToken { get; init; }
 
-    /// <summary>~/.switchboard: per-session MCP config files live here.</summary>
+    /// <summary>PBKDF2 hash of the owner's web UI password (set with `./sb passwd`), or null.</summary>
+    public string? OwnerPasswordHash { get; init; }
+
+    /// <summary>~/.switchboard: per-session MCP config files and cookie keys live here.</summary>
     public required string StateDir { get; init; }
 
     /// <summary>The built Manager MCP server that manager sessions run.</summary>
@@ -31,6 +34,7 @@ public sealed class HubOptions
         {
             Url = Environment.GetEnvironmentVariable("SWITCHBOARD_HUB_URL") ?? "http://127.0.0.1:7700",
             AdminToken = adminToken,
+            OwnerPasswordHash = Environment.GetEnvironmentVariable("SWITCHBOARD_OWNER_PASSWORD_HASH") is { Length: > 0 } hash ? hash : null,
             StateDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".switchboard"),
             ManagerDll = Path.Combine(root, "src", "Switchboard.Manager", "bin", "Debug", "net10.0", "Switchboard.Manager.dll"),
             ChannelDll = Path.Combine(root, "src", "Switchboard.Channel", "bin", "Debug", "net10.0", "Switchboard.Channel.dll"),

@@ -4,11 +4,12 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Load SWITCHBOARD_DB and friends from .env. `set -a` exports every variable it defines.
+# Load the hub URL and admin token from .env. `set -a` exports every variable it defines.
 if [[ -f "$here/.env" ]]; then
   set -a
   source "$here/.env"
   set +a
 fi
+export SWITCHBOARD_ENV_FILE="$here/.env"   # `sb passwd` writes the password hash here
 
 exec dotnet run --project "$here/src/Switchboard.Cli" --verbosity quiet -- "$@"

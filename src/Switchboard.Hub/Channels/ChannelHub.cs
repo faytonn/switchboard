@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 using Switchboard.Core.Data;
+using Switchboard.Hub.Events;
 
 namespace Switchboard.Hub.Channels;
 
@@ -20,7 +21,7 @@ namespace Switchboard.Hub.Channels;
 ///  - if a connection drops before an ack, the message is sent again on reconnect
 ///    ("at least once"). A rare duplicate beats a lost message.
 /// </summary>
-public sealed class ChannelHub(MessageStore messages, ILogger<ChannelHub> log)
+public sealed class ChannelHub(MessageStore messages, HubEvents events, ILogger<ChannelHub> log)
 {
     private const int MaxFrameBytes = 256 * 1024;
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
@@ -94,6 +95,7 @@ public sealed class ChannelHub(MessageStore messages, ILogger<ChannelHub> log)
 
         _connections[sessionId] = conn;
         log.LogInformation("Channel connected: {Session}", sessionId);
+        events.Publish("sessions", new { id = sessionId });
 
         var pump = Task.Run(() => DeliveryLoopAsync(conn, cts.Token));
         conn.Kick(); // deliver anything that queued up while the session was offline
@@ -111,6 +113,7 @@ public sealed class ChannelHub(MessageStore messages, ILogger<ChannelHub> log)
             _connections.TryRemove(new KeyValuePair<string, Connection>(sessionId, conn));
             await pump.ContinueWith(_ => { }, TaskScheduler.Default);
             log.LogInformation("Channel disconnected: {Session}", sessionId);
+            events.Publish("sessions", new { id = sessionId });
         }
     }
 
@@ -194,6 +197,7 @@ public sealed class ChannelHub(MessageStore messages, ILogger<ChannelHub> log)
         if (root.GetProperty("type").GetString() == "ack" && root.GetProperty("id").TryGetInt64(out var id))
         {
             await messages.MarkDeliveredAsync(id, ct);
+            events.Publish("delivered", new { id });
             if (_deliveryWaiters.TryGetValue(id, out var waiter))
             {
                 waiter.TrySetResult();
