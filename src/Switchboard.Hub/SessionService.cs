@@ -26,6 +26,7 @@ public sealed class SessionService(
     ActivityMonitor activity,
     IconCatalog icons,
     IconGuesser iconGuesser,
+    SessionSendLimiter sendLimiter,
     ILogger<SessionService> log)
 {
     // MCP server names inside a session. Claude Code names their tools after them, e.g.
@@ -129,6 +130,10 @@ public sealed class SessionService(
             // Custom channels aren't on Anthropic's allowlist during the research preview, so
             // they need this flag, which shows a warning we answer below.
             "--dangerously-load-development-channels", .. channelList,
+            // Claude Code's own cross-session messaging (SendMessage/ListAgents over a local
+            // socket) keeps no history and bypasses the hub. Switching it off makes every
+            // session-to-session message go through send_to_session, so it is stored in Postgres.
+            "--disallowedTools", "SendMessage", "ListAgents",
             // Pre-approve only our own servers' tools (a bare server name matches all its tools),
             // so replies and manager calls don't stop at a permission prompt. Everything else
             // still follows the permission mode. This flag takes several values, so it goes last.
@@ -264,20 +269,61 @@ public sealed class SessionService(
         SessionId.Validate(req.To);
         if (req.To == from)
         {
-            throw HubException.BadRequest("A session can't reply to itself.");
+            throw HubException.BadRequest("A session can't message itself.");
         }
 
-        // Replies may only go back to someone who wrote to you. Free session-to-session
-        // messaging, with its own rules, comes in phase 6.
-        if (!await messages.HasMessagedAsync(from: req.To, to: from, ct))
+        // Any session may message any running session. Messages to a session that isn't
+        // running would sit unread, so refuse them and say why.
+        var target = await sessions.GetAsync(req.To, ct);
+        if (target is null)
         {
-            throw HubException.Forbidden($"'{req.To}' hasn't sent you a message, so you can't reply to it. Reply to \"owner\" instead.");
+            throw HubException.NotFound($"There is no session '{req.To}'. Call list_sessions to see who's there.");
+        }
+
+        if (target.Status is not ("running" or "starting"))
+        {
+            throw HubException.Conflict($"Session '{req.To}' is {target.Status}, so nobody would read this. Tell the owner instead.");
+        }
+
+        if (!sendLimiter.TryAcquire(from, out var retryAfter))
+        {
+            throw new HubException(StatusCodes.Status429TooManyRequests,
+                $"Limit reached: {SessionSendLimiter.Limit} messages to other sessions per {SessionSendLimiter.Window.TotalMinutes:0} minutes. " +
+                $"Try again in {Math.Ceiling(retryAfter.TotalMinutes):0} min. If you're going back and forth with another session, stop and report to the owner.");
         }
 
         var message = await messages.AddAsync(from, req.To, req.Text, ct);
         events.Publish("message", message);
         var delivered = await channels.DeliverAndWaitAsync(req.To, message.Id, DeliveryTimeout, ct);
         return new SendMessageResponse(message.Id, delivered);
+    }
+
+    /// <summary>
+    /// The session directory every session may see: who exists, what they do and whether
+    /// they're running, so a session knows whom it can message.
+    /// </summary>
+    public async Task<IReadOnlyList<SessionInfo>> DirectoryAsync(Caller caller, CancellationToken ct)
+    {
+        var windows = (await tmux.ListAsync(ct)).ToDictionary(w => w.Id);
+        return (await sessions.ListAsync(ct))
+            .Where(row => row.Status != "stopped")
+            .Select(row => ToInfo(row, windows.GetValueOrDefault(row.Id)))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Message history for a session that forgot something. Workers see only messages they
+    /// sent or received; the manager (and the owner) see everything.
+    /// </summary>
+    public async Task<IReadOnlyList<Message>> SearchHistoryAsync(Caller caller, string? query, string? with, int limit, CancellationToken ct)
+    {
+        if (with is not null && with != "owner")
+        {
+            SessionId.Validate(with);
+        }
+
+        var scope = caller.CanControlSessions ? null : caller.SessionId;
+        return await messages.SearchScopedAsync(query, scope, with, Math.Clamp(limit, 1, 50), ct);
     }
 
     public async Task<ScreenResponse> ReadScreenAsync(Caller caller, string id, int scrollback, CancellationToken ct)

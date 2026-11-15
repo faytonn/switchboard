@@ -30,37 +30,10 @@ public sealed class HubClient(HttpClient http)
         return string.Join(", ", names);
     }
 
-    public async Task<string> SendAsync(string id, string text, CancellationToken ct)
-    {
-        var result = await SendAsync(HttpMethod.Post, $"api/sessions/{Uri.EscapeDataString(id)}/messages", new { text }, ct);
-        var messageId = result.GetProperty("messageId").GetInt64();
-        return result.GetProperty("delivered").GetBoolean()
-            ? $"Message #{messageId} delivered to '{id}'. Its reply will arrive as a channel message from=\"{id}\"; " +
-              "you don't need to poll. End your turn if there is nothing else to do."
-            : $"Message #{messageId} is queued: '{id}' has no channel connection right now. It will be delivered when it reconnects.";
-    }
-
     public async Task<string> ReadScreenAsync(string id, int scrollback, CancellationToken ct)
     {
         var result = await SendAsync(HttpMethod.Get, $"api/sessions/{Uri.EscapeDataString(id)}/screen?scrollback={scrollback}", null, ct);
         return result.GetProperty("screen").GetString() ?? "";
-    }
-
-    public async Task<string> ListAsync(CancellationToken ct)
-    {
-        var result = await SendAsync(HttpMethod.Get, "api/sessions", null, ct);
-        var text = new StringBuilder();
-        foreach (var s in result.EnumerateArray())
-        {
-            var idle = s.GetProperty("idleSeconds") is { ValueKind: JsonValueKind.Number } i ? $", idle {i.GetInt32()}s" : "";
-            var channel = s.GetProperty("channel").GetBoolean() ? "connected" : "offline";
-            text.AppendLine(
-                $"- {s.GetProperty("id").GetString()} ({s.GetProperty("role").GetString()}): " +
-                $"{s.GetProperty("status").GetString()}, window {s.GetProperty("window").GetString()}, channel {channel}{idle}, " +
-                $"dir {s.GetProperty("projectDir").GetString()}");
-        }
-
-        return text.Length == 0 ? "No sessions yet." : text.ToString();
     }
 
     public async Task<string> StopAsync(string id, bool force, CancellationToken ct)

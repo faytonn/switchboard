@@ -59,6 +59,17 @@ var options = new McpServerOptions
         - For a longer task, reply when it's done, when you need a decision, or when you are
           blocked. Keep replies short and self-contained.
         - Several messages can arrive together if you were busy. Answer each one.
+
+        Working with other sessions:
+        - list_sessions shows every session: its role, whether it's running or busy, and its
+          project folder.
+        - send_to_session starts a conversation with another session (to ask, delegate or
+          hand over). Its answer comes back to you as a channel message. Don't use any other
+          messaging tool; only these messages are stored and visible to the owner.
+        - Keep session-to-session messages purposeful: no thank-you or acknowledgement-only
+          replies. There is a limit per 10 minutes.
+        - search_history finds earlier messages you sent or received (the manager sees all).
+          Use it when you've lost context, for example after a restart.
         """,
 
     ToolCollection =
@@ -68,6 +79,24 @@ var options = new McpServerOptions
              [Description("The reply. Plain text; it is shown to the recipient as-is.")] string text,
              CancellationToken ct) => link.ReplyAsync(to, text, ct),
             new() { Name = "reply", Description = "Reply to a Switchboard message. The sender can't see your terminal, so this is the only way they get your answer." }),
+
+        McpServerTool.Create(
+            ([Description("Id of the session to message (see list_sessions).")] string to,
+             [Description("The message. Make it self-contained: the other session doesn't know your context.")] string text,
+             CancellationToken ct) => link.SendToSessionAsync(to, text, ct),
+            new() { Name = "send_to_session", Description = "Send a message to another Claude Code session. Its answer arrives later as a channel message from it." }),
+
+        McpServerTool.Create(
+            (CancellationToken ct) => link.ListSessionsAsync(ct),
+            new() { Name = "list_sessions", Description = "List the Switchboard sessions: id, role, status (and whether busy), model and project folder." }),
+
+        McpServerTool.Create(
+            (CancellationToken ct,
+             [Description("Words to search for; omit to get the most recent messages.")] string? query = null,
+             [Description("Only messages to or from this party: a session id, or \"owner\".")] string? with = null,
+             [Description("How many messages to return (1-50). Default 10.")] int limit = 10) =>
+                link.SearchHistoryAsync(query, with, limit, ct),
+            new() { Name = "search_history", Description = "Search earlier Switchboard messages (yours; the manager sees all). Best matches first; without a query, newest first." }),
     ],
 
     Handlers = new McpServerHandlers

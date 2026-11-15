@@ -109,6 +109,22 @@ Claude Code channels, and every message is stored in Postgres.
 - Test hubs: set `SWITCHBOARD_MANAGER_AUTOSTART=false` unless testing the supervisor, or they
   start a manager of their own.
 
+## Session-to-session (phase 6)
+
+- Every session's channel server offers `reply`, `send_to_session`, `list_sessions` and
+  `search_history` (hub: `POST /api/channel/reply|send`, `GET /api/channel/sessions|search`).
+  The manager MCP keeps only start/read/stop/list_icons; it talks through the channel tools.
+- Rules: any session may message any running session (404 unknown, 409 not running, 400 self).
+  `SessionSendLimiter`: 20 session-to-session messages per sender per 10 minutes (429).
+  Replies to the owner aren't limited.
+- `search_history`: workers see only messages they sent or received; manager and owner see all.
+  `with` filters by a session id or "owner"; no query = newest first.
+- Sessions start with `--disallowedTools SendMessage ListAgents`: Claude Code's built-in
+  cross-session messaging keeps no history and bypasses the hub.
+- Test hubs must set `SWITCHBOARD_STATE_DIR` (e.g. /tmp/sb-test-state): the default
+  ~/.switchboard/sessions holds the real hub's MCP config files, and a test hub deleting
+  "manager.mcp.json" there once removed the real manager's file.
+
 ## Permission relay
 
 - The channel server also declares `claude/channel/permission`. Claude Code then sends it

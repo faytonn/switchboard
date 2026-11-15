@@ -28,6 +28,7 @@ builder.Services.AddSingleton<MessageStore>();
 builder.Services.AddSingleton(TmuxClient.FromEnvironment());
 builder.Services.AddSingleton<HubEvents>();
 builder.Services.AddSingleton<ChannelHub>();
+builder.Services.AddSingleton<SessionSendLimiter>();
 builder.Services.AddSingleton<PermissionStore>();
 builder.Services.AddSingleton<PermissionService>();
 builder.Services.AddSingleton<IconCatalog>();
@@ -215,9 +216,18 @@ api.MapGet("/channel", async (HttpContext ctx, ChannelHub hub) =>
     return Results.Empty;
 });
 
-// The channel server's reply tool posts here.
+// The channel server's reply and send_to_session tools post here (same rules: to the owner,
+// or to any running session, rate-limited between sessions).
 api.MapPost("/channel/reply", (ReplyRequest req, HttpContext ctx, SessionService svc) =>
     svc.ReplyAsync(Caller.From(ctx), req, ctx.RequestAborted));
+api.MapPost("/channel/send", (ReplyRequest req, HttpContext ctx, SessionService svc) =>
+    svc.ReplyAsync(Caller.From(ctx), req, ctx.RequestAborted));
+
+// The channel server's list_sessions and search_history tools.
+api.MapGet("/channel/sessions", (HttpContext ctx, SessionService svc) =>
+    svc.DirectoryAsync(Caller.From(ctx), ctx.RequestAborted));
+api.MapGet("/channel/search", (string? q, string? with, int? limit, HttpContext ctx, SessionService svc) =>
+    svc.SearchHistoryAsync(Caller.From(ctx), q, with, limit ?? 10, ctx.RequestAborted));
 
 // Permission relay. The channel server reports a tool prompt; the owner answers it.
 api.MapPost("/channel/permission-request", (PermissionRequestReport report, HttpContext ctx, PermissionService svc) =>

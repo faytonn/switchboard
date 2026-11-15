@@ -156,31 +156,84 @@ public sealed class HubLink(Uri hubUrl, string token, string sessionId, HttpClie
             Json,
             ct);
 
-    public async Task<string> ReplyAsync(string to, string text, CancellationToken ct)
+    public Task<string> ReplyAsync(string to, string text, CancellationToken ct) =>
+        PostMessageAsync("api/channel/reply", to, text, ct);
+
+    public Task<string> SendToSessionAsync(string to, string text, CancellationToken ct) =>
+        PostMessageAsync("api/channel/send", to, text, ct);
+
+    private async Task<string> PostMessageAsync(string path, string to, string text, CancellationToken ct)
     {
+        var result = await CallAsync(HttpMethod.Post, path, new { to, text }, ct);
+        return to == "owner" || result.GetProperty("delivered").GetBoolean()
+            ? $"Sent to {to}."
+            : $"Saved for {to}; it will get it as soon as its channel is connected.";
+    }
+
+    /// <summary>The sessions you can message, for the list_sessions tool.</summary>
+    public async Task<string> ListSessionsAsync(CancellationToken ct)
+    {
+        var lines = new List<string>();
+        foreach (var s in (await CallAsync(HttpMethod.Get, "api/channel/sessions", null, ct)).EnumerateArray())
+        {
+            var id = s.GetProperty("id").GetString();
+            var me = id == sessionId ? " (you)" : "";
+            var activity = s.GetProperty("activity").GetString();
+            var state = s.GetProperty("status").GetString() + (activity is null ? "" : $", {activity}");
+            lines.Add($"- {id}{me}: {s.GetProperty("role").GetString()}, {state}, " +
+                      $"model {s.GetProperty("model").GetString() ?? "?"}, folder {s.GetProperty("projectDir").GetString()}");
+        }
+
+        return lines.Count == 0 ? "No other sessions." : string.Join('\n', lines);
+    }
+
+    /// <summary>Earlier messages, for the search_history tool.</summary>
+    public async Task<string> SearchHistoryAsync(string? query, string? with, int limit, CancellationToken ct)
+    {
+        var path = $"api/channel/search?limit={limit}" +
+                   (string.IsNullOrWhiteSpace(query) ? "" : $"&q={Uri.EscapeDataString(query)}") +
+                   (string.IsNullOrWhiteSpace(with) ? "" : $"&with={Uri.EscapeDataString(with)}");
+        var lines = new List<string>();
+        foreach (var m in (await CallAsync(HttpMethod.Get, path, null, ct)).EnumerateArray())
+        {
+            var from = m.GetProperty("from").GetString() ?? "owner";
+            var to = m.GetProperty("to").GetString() ?? "owner";
+            var when = m.GetProperty("createdAt").GetDateTimeOffset().ToLocalTime().ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture);
+            lines.Add($"#{m.GetProperty("id").GetInt64()} {when} {from} -> {to}: {m.GetProperty("body").GetString()}");
+        }
+
+        return lines.Count == 0 ? "No matching messages." : string.Join("\n\n", lines);
+    }
+
+    // One HTTP call to the hub. Hub errors become McpException, which Claude sees as a failed
+    // tool call with the hub's message ("Session 'x' is stopped...").
+    private async Task<JsonElement> CallAsync(HttpMethod method, string path, object? body, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(method, new Uri(hubUrl, path));
+        if (body is not null)
+        {
+            request.Content = JsonContent.Create(body, options: Json);
+        }
+
         HttpResponseMessage response;
         try
         {
-            response = await http.PostAsJsonAsync(new Uri(hubUrl, "api/channel/reply"), new { to, text }, Json, ct);
+            response = await http.SendAsync(request, ct);
         }
         catch (HttpRequestException e)
         {
-            throw new McpException($"Can't reach the Switchboard hub: {e.Message}. The reply was not sent.");
+            throw new McpException($"Can't reach the Switchboard hub: {e.Message}. Nothing was sent.");
         }
 
         using (response)
         {
-            var body = await response.Content.ReadAsStringAsync(ct);
-            if (response.StatusCode == HttpStatusCode.OK)
+            var text = await response.Content.ReadAsStringAsync(ct);
+            if (!response.IsSuccessStatusCode)
             {
-                var result = JsonDocument.Parse(body).RootElement;
-                var delivered = result.GetProperty("delivered").GetBoolean();
-                return to == "owner" || delivered
-                    ? $"Sent to {to}."
-                    : $"Saved for {to}; it will get it as soon as its channel is connected.";
+                throw new McpException(ErrorText(text) ?? $"Hub answered HTTP {(int)response.StatusCode}.");
             }
 
-            throw new McpException($"Reply not sent: {ErrorText(body) ?? $"HTTP {(int)response.StatusCode}"}");
+            return JsonDocument.Parse(text).RootElement.Clone();
         }
     }
 

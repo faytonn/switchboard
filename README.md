@@ -16,8 +16,10 @@ others; every message is pushed straight into the right session and kept in Post
 - **Push, not polling.** Messages reach a session through a Claude Code
   [channel](https://code.claude.com/docs/en/channels): a small MCP server per session that the
   hub pushes into over a WebSocket. Sessions answer with a `reply` tool.
-- **A manager agent.** The manager has tools to start, message, read and stop other sessions.
+- **A manager agent.** The manager has tools to start, read and stop other sessions.
   Workers report back to it; it reports back to you.
+- **Sessions talk to each other.** Every session can list the others, message them, and search
+  its message history (the manager sees all of it). A rate limit stops agents from looping.
 - **Approvals from your phone.** When a session wants to run a command its permission mode
   doesn't allow, the prompt shows up in the UI with Allow / Deny.
 - **Everything in Postgres.** You ↔ session and session ↔ session messages, with full-text
@@ -133,7 +135,6 @@ a row instead of looping. Once a day, when idle, the manager starts a fresh conv
 
 ## Status
 
-Built in phases; see the commit history. Next: session-to-session messaging and a history
-search tool for sessions, then a read-only demo mode.
+Built in phases; see the commit history. Next: a read-only demo mode.
 
 Icons: [Lucide](https://lucide.dev) (ISC), vendored in `src/Switchboard.Hub/wwwroot/icons/`.

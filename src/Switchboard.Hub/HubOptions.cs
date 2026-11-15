@@ -50,7 +50,10 @@ public sealed class HubOptions
         }
 
         var root = FindRepoRoot();
-        var stateDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".switchboard");
+        // SWITCHBOARD_STATE_DIR lets a second (test) hub keep its own MCP config files and keys.
+        var stateDir = Environment.GetEnvironmentVariable("SWITCHBOARD_STATE_DIR") is { Length: > 0 } sd
+            ? sd
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".switchboard");
         var freshHours = int.TryParse(Environment.GetEnvironmentVariable("SWITCHBOARD_MANAGER_FRESH_HOURS"), out var h) && h > 0 ? h : 24;
         return new HubOptions
         {

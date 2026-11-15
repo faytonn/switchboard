@@ -36,20 +36,10 @@ var tools = new McpServerPrimitiveCollection<McpServerTool>
 
     McpServerTool.Create(
         ([Description("Session id.")] string id,
-         [Description("The message. Multi-line text arrives as one message.")] string text,
-         CancellationToken ct) => hub.SendAsync(id, text, ct),
-        new() { Name = "send_message", Description = "Send a message to a session through its channel. Returns once delivered, not when the session has answered; its reply arrives later as a channel message." }),
-
-    McpServerTool.Create(
-        ([Description("Session id.")] string id,
          CancellationToken ct,
          [Description("Extra lines of scrollback above the visible screen (0-2000). Default 0.")] int scrollback = 0) =>
             hub.ReadScreenAsync(id, scrollback, ct),
         new() { Name = "read_screen", Description = "Read what a session's terminal shows right now: its latest output, or a dialog waiting for an answer." }),
-
-    McpServerTool.Create(
-        (CancellationToken ct) => hub.ListAsync(ct),
-        new() { Name = "list_sessions", Description = "List all sessions with their role, status, tmux window state, idle time and folder." }),
 
     McpServerTool.Create(
         ([Description("Session id.")] string id,
@@ -63,12 +53,14 @@ var options = new McpServerOptions
 {
     ServerInfo = new Implementation { Name = "switchboard-manager", Version = "0.3.0" },
     ServerInstructions = $"""
-        You are the Switchboard manager (session '{sessionId}'). These tools start and control
-        other Claude Code sessions, each in its own tmux window, through the Switchboard hub.
-        - send_message delivers the text through the session's channel and returns at once.
-          The session then works on its own and answers with its reply tool. Its answer
-          arrives in YOUR session as a channel message from="<its id>". Don't poll for it:
-          end your turn, and you will be woken when the reply comes.
+        You are the Switchboard manager (session '{sessionId}'). These tools start, inspect and
+        stop other Claude Code sessions, each in its own tmux window. To talk to sessions, use
+        your switchboard-channel tools: send_to_session, list_sessions, search_history, reply.
+        - send_to_session delivers your text and returns at once. The session then works on
+          its own and answers you; its answer arrives in YOUR session as a channel message
+          from="<its id>". Don't poll for it: end your turn, and you'll be woken by the reply.
+        - search_history (from switchboard-channel) shows you every session's messages, not
+          just yours. Use it to catch up on what happened before a restart.
         - The hub keeps you running: after a crash you are restarted with your conversation
           resumed, and once a day you start with a fresh conversation. So don't rely on memory
           for what's running: call list_sessions to see the sessions and their state.

@@ -90,16 +90,6 @@ public sealed class MessageStore(NpgsqlDataSource db)
         return latest;
     }
 
-    /// <summary>Has <paramref name="from"/> ever sent a message to <paramref name="to"/>?</summary>
-    public async Task<bool> HasMessagedAsync(string from, string to, CancellationToken ct = default)
-    {
-        await using var cmd = db.CreateCommand(
-            "select exists (select 1 from messages where from_session = $1 and to_session = $2)");
-        cmd.Parameters.Add(new() { Value = from });
-        cmd.Parameters.Add(new() { Value = to });
-        return (bool)(await cmd.ExecuteScalarAsync(ct))!;
-    }
-
     /// <summary>Sets delivered_at, unless already set (a resent message keeps its first time).</summary>
     public async Task MarkDeliveredAsync(long id, CancellationToken ct = default)
     {
@@ -148,6 +138,36 @@ public sealed class MessageStore(NpgsqlDataSource db)
         cmd.Parameters.Add(new() { Value = query });
         cmd.Parameters.Add(new() { Value = $"%{EscapeLike(query)}%" });
         cmd.Parameters.Add(NullableText(sessionId));
+        cmd.Parameters.Add(new() { Value = limit });
+        return await ReadAsync(cmd, ct);
+    }
+
+    /// <summary>
+    /// Search (or, without a query, the most recent messages) limited to what a caller may see.
+    /// </summary>
+    /// <param name="query">Words to find; null or empty returns the newest messages.</param>
+    /// <param name="scope">Only messages this session sent or received (a worker's own view);
+    /// null = all messages (the manager).</param>
+    /// <param name="with">Only messages to or from this party: a session id, or "owner".</param>
+    public async Task<IReadOnlyList<Message>> SearchScopedAsync(
+        string? query, string? scope, string? with, int limit, CancellationToken ct = default)
+    {
+        var hasQuery = !string.IsNullOrWhiteSpace(query);
+        await using var cmd = db.CreateCommand($"""
+            select {Columns}
+            from messages, websearch_to_tsquery('english', coalesce($1, '')) as q
+            where ($1 is null or search @@ q or body ilike $2)
+              and ($3::text is null or from_session = $3 or to_session = $3)
+              and ($4::text is null
+                   or ($4 = 'owner' and (from_session is null or to_session is null))
+                   or from_session = $4 or to_session = $4)
+            order by case when $1 is null then 0 else ts_rank(search, q) end desc, id desc
+            limit $5
+            """);
+        cmd.Parameters.Add(NullableText(hasQuery ? query : null));
+        cmd.Parameters.Add(new() { Value = hasQuery ? $"%{EscapeLike(query!)}%" : "%" });
+        cmd.Parameters.Add(NullableText(scope));
+        cmd.Parameters.Add(NullableText(with));
         cmd.Parameters.Add(new() { Value = limit });
         return await ReadAsync(cmd, ct);
     }
