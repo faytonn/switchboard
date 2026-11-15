@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <!-- The hub: owns sessions (tmux + Postgres) and serves the HTTP API. From phase 4 it also
+       routes messages to channel servers, and from phase 5 it serves the web UI. -->
+  <ItemGroup>
+    <ProjectReference Include="..\Switchboard.Core\Switchboard.Core.csproj" />
+  </ItemGroup>
+</Project>

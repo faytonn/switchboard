@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- MCP server (stdio) that gives the manager session its start/send/read/list/stop tools.
+       Claude Code starts it; it forwards each tool call to the hub's HTTP API. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="ModelContextProtocol" Version="2.4.0" />
+  </ItemGroup>
+</Project>

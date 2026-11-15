@@ -72,7 +72,8 @@ async Task<int> Start(string id, string dir, string[] rest)
     await tmux.StartAsync(id, projectDir, ClaudeCommand.Build(mode, claudeArgs));
     if (sessions is not null)
     {
-        await sessions.MarkStartedAsync(id, projectDir, tmux.DisplayTarget(id));
+        // Sessions started by sb get no hub token: they have no MCP tools that call the hub.
+        await sessions.MarkStartingAsync(id, projectDir, tmux.DisplayTarget(id), SessionRoles.Worker, tokenHash: null, status: "running");
     }
     else
     {

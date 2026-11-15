@@ -35,6 +35,22 @@ Claude Code channels, and every message is stored in Postgres.
   Claude Code is already at its prompt. `sb trust <id>` does this for the folder trust dialog,
   and the manager must use it instead of raw keys.
 
+## Hub
+
+- Run it with `scripts/run-hub.sh` (builds the solution, loads `.env`, listens on
+  `SWITCHBOARD_HUB_URL`, default `http://127.0.0.1:7700`). It applies migrations on startup.
+- The hub owns sessions. `sb` still talks to tmux directly and is a low-level debug tool.
+- Auth: every `/api` call needs `Authorization: Bearer <token>`. The admin token
+  (`SWITCHBOARD_ADMIN_TOKEN`) is the owner. Each session gets a fresh token per start, stored
+  only as a SHA-256 hash in `sessions.token_hash`, and revoked on stop. The caller's identity
+  comes from the token, never from the request body, so `from_session` can be trusted.
+- Roles: owner and manager can start/send/read/list/stop. Only the owner can start or stop a
+  manager. Workers have no API rights yet. A session can't send to or stop itself.
+- Manager sessions get `--mcp-config ~/.switchboard/sessions/<id>.mcp.json` (mode 600, holds
+  the token) and `--allowedTools mcp__switchboard-manager`. Start one with
+  `scripts/start-manager.sh [dir]`.
+- Never change an applied migration. Add a new numbered file in `Core/Data/Migrations`.
+
 ## Channels (research preview)
 
 - Custom channel servers need `claude --dangerously-load-development-channels server:<name>`.

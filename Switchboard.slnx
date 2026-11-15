@@ -2,5 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/Switchboard.Core/Switchboard.Core.csproj" />
     <Project Path="src/Switchboard.Cli/Switchboard.Cli.csproj" />
+    <Project Path="src/Switchboard.Hub/Switchboard.Hub.csproj" />
+    <Project Path="src/Switchboard.Manager/Switchboard.Manager.csproj" />
   </Folder>
 </Solution>
