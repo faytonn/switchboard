@@ -10,11 +10,13 @@
   --muted: #6b7180;
   --faint: #9aa0ab;
   --border: #e3e5ea;
-  --accent: #4f46e5;
-  --accent-soft: #eceafd;
+  /* Accent: a plain blue for buttons and links. Your own messages are dark slate, not a
+     brand colour, so the chat reads like a work tool. */
+  --accent: #2563eb;
+  --accent-soft: #e8f0fe;
   --on-accent: #ffffff;
-  --out: #4f46e5;
-  --on-out: #ffffff;
+  --out: #1f2937;
+  --on-out: #f9fafb;
   --in: #ffffff;
   --live: #16a34a;
   --on-live: #ffffff;
@@ -49,11 +51,11 @@
     --muted: #9ba1ad;
     --faint: #6c7280;
     --border: #252932;
-    --accent: #8b8cfb;
-    --accent-soft: #23234a;
+    --accent: #6ea8fe;
+    --accent-soft: #1c2a44;
     --on-accent: #0c0d10;
-    --out: #5b53e8;
-    --on-out: #ffffff;
+    --out: #2c3340;
+    --on-out: #eef1f5;
     --in: #1b1e25;
     --live: #4ade80;
     --on-live: #06210f;
