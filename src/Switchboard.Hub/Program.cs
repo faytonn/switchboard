@@ -12,6 +12,7 @@ using Switchboard.Hub.Icons;
 var options = HubOptions.FromEnvironment();
 var connectionString = Environment.GetEnvironmentVariable("SWITCHBOARD_DB")
     ?? throw new InvalidOperationException("SWITCHBOARD_DB is not set. Start the hub with scripts/run-hub.sh.");
+options.EnsureTestHubIsolated(connectionString);
 
 var builder = WebApplication.CreateBuilder(args);
 // ASP.NET Core logs two lines per request at Information. With the UI's live connection and the

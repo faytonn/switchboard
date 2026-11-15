@@ -123,7 +123,9 @@ Claude Code channels, and every message is stored in Postgres.
   cross-session messaging keeps no history and bypasses the hub.
 - Test hubs must set `SWITCHBOARD_STATE_DIR` (e.g. /tmp/sb-test-state): the default
   ~/.switchboard/sessions holds the real hub's MCP config files, and a test hub deleting
-  "manager.mcp.json" there once removed the real manager's file.
+  "manager.mcp.json" there once removed the real manager's file. The hub enforces this
+  (`HubOptions.EnsureTestHubIsolated`): with a port other than 7700 or a database other than
+  `switchboard`, it refuses to start if its data folder is ~/.switchboard.
 
 ## Permission relay
 

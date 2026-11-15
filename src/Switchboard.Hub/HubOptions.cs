@@ -1,3 +1,5 @@
+using Npgsql;
+
 namespace Switchboard.Hub;
 
 /// <summary>Hub settings, read from environment variables (scripts/run-hub.sh loads .env).</summary>
@@ -53,7 +55,7 @@ public sealed class HubOptions
         // SWITCHBOARD_STATE_DIR lets a second (test) hub keep its own MCP config files and keys.
         var stateDir = Environment.GetEnvironmentVariable("SWITCHBOARD_STATE_DIR") is { Length: > 0 } sd
             ? sd
-            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".switchboard");
+            : DefaultStateDir;
         var freshHours = int.TryParse(Environment.GetEnvironmentVariable("SWITCHBOARD_MANAGER_FRESH_HOURS"), out var h) && h > 0 ? h : 24;
         return new HubOptions
         {
@@ -71,6 +73,38 @@ public sealed class HubOptions
             ChannelDll = Path.Combine(root, "src", "Switchboard.Channel", "bin", "Debug", "net10.0", "Switchboard.Channel.dll"),
         };
     }
+
+    /// <summary>The real hub's data folder: ~/.switchboard.</summary>
+    public static string DefaultStateDir =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".switchboard");
+
+    public const int DefaultPort = 7700;
+    public const string DefaultDatabase = "switchboard";
+
+    /// <summary>
+    /// Refuses to start a test hub (a port other than 7700 or a database other than
+    /// "switchboard") that would share the real hub's data folder. Both hubs write and delete
+    /// &lt;id&gt;.mcp.json files there, so a test session called "manager" once deleted the real
+    /// manager's file. Set SWITCHBOARD_STATE_DIR (e.g. /tmp/sb-test-state) for test hubs.
+    /// </summary>
+    public void EnsureTestHubIsolated(string connectionString)
+    {
+        var port = new Uri(Url).Port;
+        var database = new NpgsqlConnectionStringBuilder(connectionString).Database;
+        var isTestHub = port != DefaultPort || !string.Equals(database, DefaultDatabase, StringComparison.Ordinal);
+        if (isTestHub && SamePath(StateDir, DefaultStateDir))
+        {
+            throw new InvalidOperationException(
+                $"This looks like a test hub (port {port}, database '{database}') but its data folder is the real hub's {DefaultStateDir}. " +
+                "Set SWITCHBOARD_STATE_DIR to a folder of its own, e.g. /tmp/sb-test-state.");
+        }
+    }
+
+    private static bool SamePath(string a, string b) =>
+        string.Equals(Normalize(a), Normalize(b), StringComparison.Ordinal);
+
+    private static string Normalize(string path) =>
+        Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar);
 
     private static string Required(string name) =>
         Environment.GetEnvironmentVariable(name) is { Length: > 0 } value
