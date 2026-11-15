@@ -206,6 +206,9 @@ public sealed class TmuxClient(string sessionName)
         await RunAsync(["kill-window", "-t", Target(id)], ct: ct);
     }
 
+    /// <summary>The human-readable tmux target, e.g. "switchboard:demo" (stored in Postgres).</summary>
+    public string DisplayTarget(string id) => $"{SessionName}:{id}";
+
     // "=" asks tmux for an exact name match. Without it, tmux also accepts a prefix or a
     // pattern, so the target "api" could hit the window "api-fix".
     private string Target(string id) => $"={SessionName}:={id}";

@@ -1,0 +1,30 @@
+# Postgres for Switchboard.
+#   Start: docker compose up -d      Stop: docker compose down      (data survives both)
+#   Delete all data: docker compose down -v
+name: switchboard
+
+services:
+  db:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: switchboard
+      POSTGRES_USER: switchboard
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env (run scripts/setup-env.sh)}
+    ports:
+      # 127.0.0.1 only. Docker's published ports go around the Windows firewall, so "5433:5432"
+      # would let anyone on your Wi-Fi try to log in to the database.
+      # 5433, because a native Windows Postgres already uses 5432.
+      - "127.0.0.1:5433:5432"
+    volumes:
+      # From version 18 the image keeps its data under /var/lib/postgresql/18/docker, so the
+      # volume mounts the parent folder (not .../data as with older images).
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U switchboard -d switchboard"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+volumes:
+  pgdata:

@@ -1,31 +1,55 @@
 using System.Globalization;
+using Npgsql;
 using Switchboard.Core;
 using Switchboard.Core.Claude;
+using Switchboard.Core.Data;
 using Switchboard.Core.Tmux;
 
 // `sb` is a small command-line tool for driving sessions by hand. Phase 1 uses it to test
-// tmux control. Later phases reuse the same TmuxClient from the hub.
+// tmux control, phase 2 adds message logging. Later phases reuse the same Core classes
+// from the hub.
 
 var tmux = TmuxClient.FromEnvironment();
+
+// Postgres is optional for the tmux commands: without SWITCHBOARD_DB they still work but log
+// nothing. The ./sb script loads SWITCHBOARD_DB from .env.
+var connectionString = Environment.GetEnvironmentVariable("SWITCHBOARD_DB");
+await using var db = string.IsNullOrWhiteSpace(connectionString) ? null : NpgsqlDataSource.Create(connectionString);
+var sessions = db is null ? null : new SessionStore(db);
+var messages = db is null ? null : new MessageStore(db);
 
 try
 {
     return args switch
     {
         ["start", var id, var dir, .. var rest] => await Start(id, dir, rest),
-        ["send", var id, .. var words] when words.Length > 0 => await Send(id, words),
         ["trust", var id, .. var opts] => await Trust(id, opts),
+        ["send", var id, .. var words] when words.Length > 0 => await Send(id, words),
         ["keys", var id, .. var keys] when keys.Length > 0 => await Keys(id, keys),
         ["read", var id, .. var opts] => await Read(id, opts),
         ["wait", var id, var text, .. var opts] => await Wait(id, text, opts),
         ["list"] => await List(),
         ["stop", var id, .. var opts] => await Stop(id, opts),
+        ["migrate"] => await Migrate(),
+        ["log", var id, .. var opts] => await Log(id, opts),
+        ["search", .. var words] when words.Length > 0 => await Search(words),
         _ => Usage(),
     };
 }
 catch (Exception e) when (e is TmuxException or ArgumentException)
 {
     Console.Error.WriteLine($"error: {e.Message}");
+    return 1;
+}
+catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UndefinedTable)
+{
+    Console.Error.WriteLine("error: the database has no Switchboard tables yet. Run: ./sb migrate");
+    return 1;
+}
+catch (NpgsqlException e)
+{
+    Console.Error.WriteLine($"error: database: {e.Message}");
+    Console.Error.WriteLine("Is Postgres running? Try: docker compose up -d");
     return 1;
 }
 
@@ -46,17 +70,18 @@ async Task<int> Start(string id, string dir, string[] rest)
     var projectDir = WslPath.ToLinux(dir);
 
     await tmux.StartAsync(id, projectDir, ClaudeCommand.Build(mode, claudeArgs));
+    if (sessions is not null)
+    {
+        await sessions.MarkStartedAsync(id, projectDir, tmux.DisplayTarget(id));
+    }
+    else
+    {
+        WarnNoDatabase();
+    }
+
     Console.WriteLine($"Started '{id}' in {projectDir} (permission mode: {mode})");
     Console.WriteLine($"If the folder is new to Claude Code, answer the trust dialog with: sb trust {id}");
     Console.WriteLine($"Watch it live: tmux attach -t {tmux.SessionName}  (Ctrl-b w picks a window, Ctrl-b d detaches)");
-    return 0;
-}
-
-async Task<int> Send(string id, string[] words)
-{
-    // `sb send demo -` reads the message from stdin, which is handy for multi-line text.
-    var text = words is ["-"] ? await Console.In.ReadToEndAsync() : string.Join(' ', words);
-    await tmux.SendTextAsync(id, text.TrimEnd('\n'));
     return 0;
 }
 
@@ -67,6 +92,25 @@ async Task<int> Trust(string id, string[] opts)
     Console.WriteLine(result == ConfirmResult.Confirmed
         ? "Trust dialog was on screen: chose \"Yes, I trust this folder\"."
         : "No trust dialog: Claude Code is already at its prompt. Pressed nothing.");
+    return 0;
+}
+
+async Task<int> Send(string id, string[] words)
+{
+    // `sb send demo -` reads the message from stdin, which is handy for multi-line text.
+    var text = (words is ["-"] ? await Console.In.ReadToEndAsync() : string.Join(' ', words)).TrimEnd('\n');
+    if (messages is null)
+    {
+        WarnNoDatabase();
+        await tmux.SendTextAsync(id, text);
+        return 0;
+    }
+
+    // Save first (delivered_at = null), deliver, then mark delivered. If tmux fails, the row
+    // stays and shows the message never arrived.
+    var message = await messages.AddAsync(from: null, to: id, text);
+    await tmux.SendTextAsync(id, text);
+    await messages.MarkDeliveredAsync(message.Id);
     return 0;
 }
 
@@ -120,9 +164,88 @@ async Task<int> Stop(string id, string[] opts)
 {
     var grace = opts.Contains("--force") ? TimeSpan.Zero : TimeSpan.FromSeconds(5);
     await tmux.StopAsync(id, grace);
+    if (sessions is not null)
+    {
+        await sessions.MarkStoppedAsync(id);
+    }
+
     Console.WriteLine($"Stopped '{id}'.");
     return 0;
 }
+
+async Task<int> Migrate()
+{
+    var applied = await Migrator.MigrateAsync(RequireDatabase());
+    Console.WriteLine(applied.Count == 0
+        ? "Database is up to date."
+        : $"Applied: {string.Join(", ", applied)}");
+    return 0;
+}
+
+async Task<int> Log(string id, string[] opts)
+{
+    SessionId.Validate(id);
+    RequireDatabase();
+    var history = await messages!.HistoryAsync(id, IntOption(opts, "--limit") ?? 20);
+    if (history.Count == 0)
+    {
+        Console.WriteLine($"No messages for '{id}'.");
+    }
+
+    foreach (var m in history)
+    {
+        PrintMessage(m);
+    }
+
+    return 0;
+}
+
+async Task<int> Search(string[] words)
+{
+    // `sb search <words...> [--session id] [--limit N]`: options may come anywhere.
+    var session = StringOption(words, "--session");
+    var limit = IntOption(words, "--limit") ?? 10;
+    var query = string.Join(' ', words.Where((w, i) =>
+        w is not ("--session" or "--limit") && (i == 0 || words[i - 1] is not ("--session" or "--limit"))));
+    if (query.Length == 0)
+    {
+        throw new ArgumentException("Give some words to search for.");
+    }
+
+    if (session is not null)
+    {
+        SessionId.Validate(session);
+    }
+
+    RequireDatabase();
+    var found = await messages!.SearchAsync(query, session, limit);
+    Console.WriteLine(found.Count == 0 ? $"No messages match \"{query}\"." : $"{found.Count} match(es), best first:");
+    foreach (var m in found)
+    {
+        PrintMessage(m);
+    }
+
+    return 0;
+}
+
+NpgsqlDataSource RequireDatabase() =>
+    db ?? throw new ArgumentException("SWITCHBOARD_DB is not set. Run scripts/setup-env.sh, then use ./sb (it loads .env).");
+
+static void PrintMessage(Message m)
+{
+    var from = m.From ?? "you";
+    var to = m.To ?? "you";
+    var when = m.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+    var state = m.DeliveredAt is null ? "  [not delivered]" : "";
+    Console.WriteLine($"#{m.Id}  {when}  {from} → {to}{state}");
+    foreach (var line in m.Body.Split('\n'))
+    {
+        Console.WriteLine($"    {line}");
+    }
+}
+
+static void WarnNoDatabase() =>
+    Console.Error.WriteLine("note: SWITCHBOARD_DB is not set, so nothing is saved to Postgres.");
 
 static string? StringOption(string[] opts, string name)
 {
@@ -173,6 +296,11 @@ static int Usage()
           sb wait  <id> <text> [--timeout S]               wait until text is on screen (default 30s)
           sb list                                          list sessions
           sb stop  <id> [--force]                          /exit, then close the window
+
+        Postgres (needs SWITCHBOARD_DB, which ./sb loads from .env):
+          sb migrate                                       create or update the tables
+          sb log    <id> [--limit N]                       messages sent to or by a session (default 20)
+          sb search <words...> [--session id] [--limit N]  search all messages (default 10)
 
         Session ids: lowercase letters, digits and hyphens. Quote Windows paths: 'C:\Users\me\proj'.
         """);

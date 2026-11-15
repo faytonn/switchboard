@@ -3,4 +3,12 @@
 # Usage: ./sb <command> [args...]   (run ./sb with no arguments for help)
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Load SWITCHBOARD_DB and friends from .env. `set -a` exports every variable it defines.
+if [[ -f "$here/.env" ]]; then
+  set -a
+  source "$here/.env"
+  set +a
+fi
+
 exec dotnet run --project "$here/src/Switchboard.Cli" --verbosity quiet -- "$@"

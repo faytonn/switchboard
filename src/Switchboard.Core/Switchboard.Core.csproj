@@ -1,3 +1,13 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <!-- Shared library: tmux control now, database access from phase 2. -->
+  <!-- Shared library: tmux control, Claude Code screen handling, Postgres access. -->
+
+  <ItemGroup>
+    <PackageReference Include="Npgsql" Version="10.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- SQL migrations are compiled into the DLL, so every program that uses Core can
+         migrate the database without needing the .sql files next to it. -->
+    <EmbeddedResource Include="Data/Migrations/*.sql" LogicalName="migrations/%(Filename)%(Extension)" />
+  </ItemGroup>
 </Project>
