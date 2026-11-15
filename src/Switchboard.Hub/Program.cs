@@ -7,6 +7,7 @@ using Switchboard.Hub;
 using Switchboard.Hub.Auth;
 using Switchboard.Hub.Channels;
 using Switchboard.Hub.Events;
+using Switchboard.Hub.Icons;
 
 var options = HubOptions.FromEnvironment();
 var connectionString = Environment.GetEnvironmentVariable("SWITCHBOARD_DB")
@@ -29,6 +30,8 @@ builder.Services.AddSingleton<HubEvents>();
 builder.Services.AddSingleton<ChannelHub>();
 builder.Services.AddSingleton<PermissionStore>();
 builder.Services.AddSingleton<PermissionService>();
+builder.Services.AddSingleton<IconCatalog>();
+builder.Services.AddSingleton<IconGuesser>();
 builder.Services.AddSingleton<ActivityMonitor>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ActivityMonitor>());
 builder.Services.AddSingleton<SessionService>();
@@ -58,6 +61,8 @@ foreach (var dll in new[] { options.ManagerDll, options.ChannelDll })
         app.Logger.LogWarning("MCP server not built yet ({Path}). Sessions can't start until it is.", dll);
     }
 }
+
+app.Services.GetRequiredService<IconGuesser>().Validate();
 
 if (options.OwnerPasswordHash is null)
 {
@@ -159,6 +164,12 @@ api.MapPost("/sessions/{id}/messages", (string id, SendMessageRequest req, HttpC
 
 api.MapGet("/sessions/{id}/messages", (string id, int? limit, HttpContext ctx, SessionService svc) =>
     svc.HistoryAsync(Caller.From(ctx), id, limit ?? 20, ctx.RequestAborted));
+
+// The icon names a session tile can use (the symbols in wwwroot/icons/lucide.svg).
+api.MapGet("/icons", (IconCatalog icons) => icons.Names);
+
+api.MapPut("/sessions/{id}/appearance", (string id, AppearanceRequest req, HttpContext ctx, SessionService svc) =>
+    svc.SetAppearanceAsync(Caller.From(ctx), id, req, ctx.RequestAborted));
 
 api.MapGet("/messages/search", (string q, string? session, int? limit, HttpContext ctx, SessionService svc) =>
     svc.SearchAsync(Caller.From(ctx), q, session, limit ?? 10, ctx.RequestAborted));

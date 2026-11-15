@@ -1,0 +1,24 @@
+# Lucide icons offered for session tiles (lucide-static 1.73.0, ISC).
+# One name per word; lines starting with # are comments. Rebuild with scripts/build-icon-sprite.py.
+# Code & tools
+code-xml terminal square-terminal braces bug git-branch git-merge git-pull-request package boxes blocks puzzle wrench settings cpu file-code
+# Infra & data
+server database hard-drive cloud container network globe link plug webhook layers workflow waypoints split route radar shield-check lock key-round
+# Apps & devices
+app-window layout-dashboard monitor smartphone gamepad-2 bot brain sparkles rocket zap
+# Docs & notes
+book book-open notebook-pen notepad-text file-text folder archive clipboard-list list-todo list-checks kanban newspaper library
+# Time & booking
+calendar calendar-days calendar-check clock timer ticket
+# Money & commerce
+shopping-cart store credit-card wallet coins landmark briefcase
+# Charts & analysis
+chart-line chart-bar chart-pie trending-up calculator table search target
+# Communication
+mail message-square messages-square send bell megaphone users
+# Media & design
+palette pen-tool image camera video film music headphones
+# Places & travel
+map map-pin plane truck train-front house building-2
+# Life & science
+utensils coffee heart heart-pulse stethoscope dumbbell activity leaf sprout flame graduation-cap school flask-conical microscope atom dna telescope lightbulb trophy scale factory

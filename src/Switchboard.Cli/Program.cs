@@ -23,6 +23,7 @@ try
         ["stop", var id, .. var opts] => await Stop(id, opts),
         ["log", var id, .. var opts] => await Log(id, opts),
         ["search", .. var words] when words.Length > 0 => await Search(words),
+        ["icons"] => await Icons(),
         ["perms"] => await Perms(),
         ["allow", var id, var requestId] => await Decide(id, requestId, "allow"),
         ["deny", var id, var requestId] => await Decide(id, requestId, "deny"),
@@ -41,17 +42,20 @@ catch (Exception e) when (e is CliException or TmuxException or ArgumentExceptio
 
 static async Task<int> Start(string id, string dir, string[] opts)
 {
-    RejectUnknown(opts, valueOptions: ["--mode"], flags: ["--manager"]);
+    RejectUnknown(opts, valueOptions: ["--mode", "--icon", "--color"], flags: ["--manager"]);
     SessionId.Validate(id);
     var mode = StringOption(opts, "--mode");
+    var icon = StringOption(opts, "--icon");
+    var color = IntOption(opts, "--color");
     var manager = opts.Contains("--manager");
     using var hub = new HubApi();
 
     Console.Error.WriteLine($"Starting '{id}' (this waits until its channel is connected)...");
-    var result = await hub.PostAsync("api/sessions", new { id, projectDir = dir, permissionMode = mode, manager });
+    var result = await hub.PostAsync("api/sessions", new { id, projectDir = dir, permissionMode = mode, manager, icon, color });
     var session = result.GetProperty("session");
     var dialogs = result.GetProperty("dialogs").EnumerateArray().Select(d => d.GetString()).ToList();
-    Console.WriteLine($"Started {session.GetProperty("role").GetString()} '{id}' in {session.GetProperty("projectDir").GetString()}, channel connected.");
+    var tile = session.GetProperty("icon").GetString() ?? "initials";
+    Console.WriteLine($"Started {session.GetProperty("role").GetString()} '{id}' in {session.GetProperty("projectDir").GetString()}, channel connected, icon {tile}.");
     if (dialogs.Count > 0)
     {
         Console.WriteLine($"Answered: {string.Join(", ", dialogs)}");
@@ -143,6 +147,14 @@ static async Task<int> Search(string[] words)
     var found = (await hub.GetAsync(path)).EnumerateArray().ToList();
     Console.WriteLine(found.Count == 0 ? $"No messages match \"{query}\"." : $"{found.Count} match(es), best first:");
     found.ForEach(PrintMessage);
+    return 0;
+}
+
+static async Task<int> Icons()
+{
+    using var hub = new HubApi();
+    var names = (await hub.GetAsync("api/icons")).EnumerateArray().Select(n => n.GetString());
+    Console.WriteLine(string.Join("  ", names));
     return 0;
 }
 
@@ -336,10 +348,13 @@ static int Usage()
 {
     Console.Error.WriteLine("""
         Usage (session commands go through the hub: start it with scripts/run-hub.sh):
-          sb start  <id> <project-dir> [--mode M] [--manager]
+          sb start  <id> <project-dir> [--mode M] [--manager] [--icon NAME] [--color 0-7]
                                        start Claude Code with its channel; waits until connected
                                        M: acceptEdits (default), auto, plan, manual, dontAsk,
                                           bypassPermissions. --manager adds the manager tools.
+                                       --icon: a Lucide name (sb icons lists them); without it
+                                          the hub guesses from the folder name and README.
+          sb icons                     list the icon names
           sb send   <id> <text...>     send a message through the session's channel
           sb send   <id> -             same, message read from stdin
           sb read   <id> [--lines N]   print the session's screen (+ N lines of scrollback)

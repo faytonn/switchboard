@@ -23,9 +23,14 @@ var tools = new McpServerPrimitiveCollection<McpServerTool>
          [Description("Project folder for the session. A Linux path (/home/...) or a Windows path (C:\\...).")] string project_dir,
          CancellationToken ct,
          // Default values make a parameter optional in the tool's JSON schema.
-         [Description("Optional Claude Code permission mode: acceptEdits (default), plan, manual, auto, dontAsk or bypassPermissions.")] string? permission_mode = null) =>
-            hub.StartAsync(id, project_dir, permission_mode, ct),
+         [Description("Optional Claude Code permission mode: acceptEdits (default), plan, manual, auto, dontAsk or bypassPermissions.")] string? permission_mode = null,
+         [Description("Icon for the session's tile in the owner's UI: a Lucide name that fits the work, e.g. ticket (bookings), notebook-pen (notes), workflow (pipelines), database, server (APIs), globe (websites), chart-line (dashboards), bug (bug fixing), flask-conical (tests). list_icons shows all. Omit to let the hub guess from the folder.")] string? icon = null) =>
+            hub.StartAsync(id, project_dir, permission_mode, icon, ct),
         new() { Name = "start_session", Description = "Start a new Claude Code session for a project folder, in its own tmux window." }),
+
+    McpServerTool.Create(
+        (CancellationToken ct) => hub.ListIconsAsync(ct),
+        new() { Name = "list_icons", Description = "List the icon names start_session accepts for a session's tile." }),
 
     McpServerTool.Create(
         ([Description("Session id.")] string id,
@@ -62,6 +67,8 @@ var options = new McpServerOptions
           The session then works on its own and answers with its reply tool. Its answer
           arrives in YOUR session as a channel message from="<its id>". Don't poll for it:
           end your turn, and you will be woken when the reply comes.
+        - When you start a session, give it an icon that matches its task (a booking system:
+          ticket; a data pipeline: workflow; fixing a bug: bug). The owner sees it in the UI.
         - read_screen shows a session's terminal as text. Use it when a session seems stuck
           (for example on a permission prompt), not to wait for answers.
         - Your own user writes to you through the channel with from="owner". Answer them with

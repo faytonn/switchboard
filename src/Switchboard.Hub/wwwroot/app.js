@@ -49,14 +49,23 @@ async function api(path, { method = 'GET', body } = {}) {
   return data;
 }
 
-// ---------- session colours and avatars ----------
+// ---------- session tiles: icon (or initials) on the session's colour ----------
 
-// The same id always gets the same colour: a small string hash picks one of 8 palette
-// classes (.c0 ... .c7), whose colours are tuned for light and dark mode in app.css.
-function colorClass(id) {
+const SVG = 'http://www.w3.org/2000/svg';
+
+// Without a chosen colour, the same id always gets the same one: a small string hash picks
+// one of 8 palette classes (.c0 ... .c7), defined in app.css for light and dark mode.
+function hashColor(id) {
   let hash = 2166136261;
   for (const ch of id) hash = Math.imul(hash ^ ch.codePointAt(0), 16777619);
-  return `c${(hash >>> 0) % 8}`;
+  return (hash >>> 0) % 8;
+}
+
+// The colour class for a session: the one stored for it, or the hashed default.
+// `look` overrides what's stored (the picker's live preview).
+function tileColorClass(id, look) {
+  const color = look ? look.color : sessionById(id)?.color;
+  return `c${color ?? hashColor(id)}`;
 }
 
 // "api-fix" -> "AF", "manager" -> "M".
@@ -65,9 +74,26 @@ function initials(id) {
   return (parts.length > 1 ? parts[0][0] + parts[1][0] : id[0]).toUpperCase();
 }
 
-function avatar(id, size = '') {
-  const node = el('span', `avatar ${size} ${colorClass(id)}`, initials(id));
+// One icon from the vendored Lucide sprite: <svg><use href="/icons/lucide.svg#ticket"></svg>.
+// Same-origin file, so the strict CSP needs no exception.
+function iconSvg(name) {
+  const svg = document.createElementNS(SVG, 'svg');
+  svg.setAttribute('class', 'icon');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  const use = document.createElementNS(SVG, 'use');
+  use.setAttribute('href', `/icons/lucide.svg#${name}`);
+  svg.append(use);
+  return svg;
+}
+
+// The session's tile, like an app icon. Sizes: lg, md, '' (44px), sm, xs.
+function sessionTile(id, size = '', look) {
+  const icon = look ? look.icon : sessionById(id)?.icon;
+  const node = el('span', `tile ${size} ${tileColorClass(id, look)}`);
   node.setAttribute('aria-hidden', 'true');
+  if (icon) node.append(iconSvg(icon));
+  else node.textContent = initials(id);
   return node;
 }
 
@@ -125,8 +151,8 @@ function sessionRow(s) {
   if (s.id === state.current) link.classList.add('active');
   if (s.status === 'stopped') link.classList.add('stopped');
 
-  const wrap = el('span', 'avatar-wrap');
-  wrap.append(avatar(s.id), el('span', `presence ${status.key}`));
+  const wrap = el('span', 'tile-wrap');
+  wrap.append(sessionTile(s.id), el('span', `presence ${status.key}`));
   wrap.title = status.text;
 
   const main = el('div', 'row-main');
@@ -207,8 +233,8 @@ function renderChatHeader() {
   const s = sessionById(state.current);
   if (!s) return;
   const status = statusOf(s);
-  const wrap = el('span', 'avatar-wrap');
-  wrap.append(avatar(s.id, 'md'), el('span', `presence ${status.key}`));
+  const wrap = el('span', 'tile-wrap');
+  wrap.append(sessionTile(s.id, 'md'), el('span', `presence ${status.key}`));
   $('chat-avatar').replaceChildren(wrap);
   $('chat-title').textContent = s.id;
   $('chat-role').hidden = s.role !== 'manager';
@@ -284,9 +310,9 @@ function messageEl(m, first, last) {
   if (last) row.classList.add('last');
 
   if (kind === 'in') {
-    row.classList.add(colorClass(m.from));
+    row.classList.add(tileColorClass(m.from));
     const slot = el('span', 'avatar-slot');
-    if (last) slot.append(avatar(m.from, 'sm'));
+    if (last) slot.append(sessionTile(m.from, 'sm'));
     row.append(slot);
   }
 
@@ -309,7 +335,7 @@ function messageEl(m, first, last) {
 
 // Agent-to-agent message: a <details> element, so expanding works without any JavaScript.
 function activityEl(m) {
-  const details = el('details', `activity ${colorClass(m.from)}`);
+  const details = el('details', `activity ${tileColorClass(m.from)}`);
   details.dataset.id = String(m.id);
   if (state.expanded.has(m.id)) details.open = true;
   details.addEventListener('toggle', () => {
@@ -322,7 +348,7 @@ function activityEl(m) {
   route.append(m.from, el('span', 'arrow', '→'), m.to);
   const gist = el('span', 'gist', m.body.replace(/\s+/g, ' '));
   const when = timeEl(m.createdAt, 'when');
-  summary.append(avatar(m.from, 'xs'), route, gist, when);
+  summary.append(sessionTile(m.from, 'xs'), route, gist, when);
   if (!m.deliveredAt) summary.append(el('span', 'queued', 'queued'));
 
   details.append(summary, el('div', 'full', m.body));
@@ -335,11 +361,11 @@ function renderTyping() {
   box.querySelector('.typing')?.remove();
   const s = sessionById(state.current);
   if (!s || statusOf(s).key !== 'working') return;
-  const row = el('div', `typing ${colorClass(s.id)}`);
+  const row = el('div', `typing ${tileColorClass(s.id)}`);
   const bubble = el('div', 'bubble');
   bubble.append(el('span'), el('span'), el('span'));
   bubble.setAttribute('aria-label', `${s.id} is working`);
-  row.append(avatar(s.id, 'sm'), bubble);
+  row.append(sessionTile(s.id, 'sm'), bubble);
   box.append(row);
   const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 200;
   if (nearBottom) box.scrollTop = box.scrollHeight;
@@ -581,6 +607,81 @@ function closeTerminal() {
   state.terminalTimer = null;
 }
 
+// ---------- icon and colour picker (tap the tile in the chat header) ----------
+
+const picker = { id: null, icon: null, color: null, names: null };
+
+async function openPicker() {
+  const s = sessionById(state.current);
+  if (!s) return;
+  try {
+    picker.names ??= await api('/api/icons');
+  } catch (e) {
+    toast(e.message);
+    return;
+  }
+  picker.id = s.id;
+  picker.icon = s.icon ?? null;
+  picker.color = s.color ?? null;
+  $('tile-for').textContent = s.id;
+  $('tile-search').value = '';
+  $('tile-status').textContent = '';
+  renderPicker();
+  $('tile-dialog').showModal();
+}
+
+function renderPicker() {
+  $('tile-preview').replaceChildren(sessionTile(picker.id, 'lg', picker));
+
+  // Colours: "Auto" (the hashed default) and the 8 palette colours.
+  const colors = [{ value: null, cls: `c${hashColor(picker.id)}`, label: 'Auto' }];
+  for (let i = 0; i < 8; i++) colors.push({ value: i, cls: `c${i}`, label: '' });
+  $('tile-colors').replaceChildren(...colors.map((c) => {
+    const b = el('button', `swatch ${c.cls}`, c.label);
+    b.type = 'button';
+    b.setAttribute('role', 'radio');
+    b.setAttribute('aria-checked', String(picker.color === c.value));
+    b.setAttribute('aria-label', c.value === null ? 'Automatic colour' : `Colour ${c.value + 1}`);
+    b.addEventListener('click', () => { picker.color = c.value; renderPicker(); });
+    return b;
+  }));
+
+  // Icons: "initials" first, then every icon whose name matches the search.
+  const query = $('tile-search').value.trim().toLowerCase();
+  const names = picker.names.filter((n) => !query || n.includes(query));
+  const choices = [null, ...names].map((name) => {
+    const b = el('button', `icon-choice ${tileColorClass(picker.id, picker)}`);
+    b.type = 'button';
+    b.setAttribute('role', 'radio');
+    b.setAttribute('aria-checked', String(picker.icon === name));
+    b.title = name ?? 'Initials';
+    b.setAttribute('aria-label', name ?? 'Initials');
+    if (name) b.append(iconSvg(name));
+    else b.textContent = initials(picker.id);
+    b.addEventListener('click', () => { picker.icon = name; renderPicker(); });
+    return b;
+  });
+  $('tile-icons').replaceChildren(...choices);
+}
+
+async function savePicker(e) {
+  e.preventDefault();
+  $('tile-save').disabled = true;
+  try {
+    await api(`/api/sessions/${encodeURIComponent(picker.id)}/appearance`, {
+      method: 'PUT',
+      body: { icon: picker.icon, color: picker.color },
+    });
+    $('tile-dialog').close();
+    await loadSessions();
+    renderMessages();
+  } catch (err) {
+    $('tile-status').textContent = err.message;
+  } finally {
+    $('tile-save').disabled = false;
+  }
+}
+
 // ---------- start dialog ----------
 
 function openStartDialog() {
@@ -738,6 +839,10 @@ $('stop-btn').addEventListener('click', stopCurrent);
 $('term-btn').addEventListener('click', toggleTerminal);
 $('term-refresh').addEventListener('click', refreshTerminal);
 $('chat-approval').addEventListener('click', focusApproval);
+$('chat-avatar').addEventListener('click', openPicker);
+$('tile-form').addEventListener('submit', savePicker);
+$('tile-cancel').addEventListener('click', () => $('tile-dialog').close());
+$('tile-search').addEventListener('input', renderPicker);
 $('new-btn').addEventListener('click', openStartDialog);
 $('start-form').addEventListener('submit', submitStart);
 $('start-cancel').addEventListener('click', () => $('start-dialog').close());

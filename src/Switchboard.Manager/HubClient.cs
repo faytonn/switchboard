@@ -14,12 +14,19 @@ public sealed class HubClient(HttpClient http)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
-    public async Task<string> StartAsync(string id, string projectDir, string? permissionMode, CancellationToken ct)
+    public async Task<string> StartAsync(string id, string projectDir, string? permissionMode, string? icon, CancellationToken ct)
     {
-        var result = await SendAsync(HttpMethod.Post, "api/sessions", new { id, projectDir, permissionMode }, ct);
+        var result = await SendAsync(HttpMethod.Post, "api/sessions", new { id, projectDir, permissionMode, icon }, ct);
         var dialogs = result.GetProperty("dialogs").EnumerateArray().Select(d => d.GetString()).ToList();
         var answered = dialogs.Count == 0 ? "" : $" (answered: {string.Join(", ", dialogs)})";
-        return $"Started session '{id}' in {projectDir}{answered}. Its channel is connected; it is ready for messages.";
+        var tile = result.GetProperty("session").GetProperty("icon").GetString() ?? "initials";
+        return $"Started session '{id}' in {projectDir}{answered}, icon {tile}. Its channel is connected; it is ready for messages.";
+    }
+
+    public async Task<string> ListIconsAsync(CancellationToken ct)
+    {
+        var names = (await SendAsync(HttpMethod.Get, "api/icons", null, ct)).EnumerateArray().Select(n => n.GetString());
+        return string.Join(", ", names);
     }
 
     public async Task<string> SendAsync(string id, string text, CancellationToken ct)

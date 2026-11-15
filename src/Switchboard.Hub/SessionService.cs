@@ -7,6 +7,7 @@ using Switchboard.Core.Tmux;
 using Switchboard.Hub.Auth;
 using Switchboard.Hub.Channels;
 using Switchboard.Hub.Events;
+using Switchboard.Hub.Icons;
 
 namespace Switchboard.Hub;
 
@@ -23,6 +24,8 @@ public sealed class SessionService(
     HubEvents events,
     PermissionService permissions,
     ActivityMonitor activity,
+    IconCatalog icons,
+    IconGuesser iconGuesser,
     ILogger<SessionService> log)
 {
     // MCP server names inside a session. Claude Code names their tools after them, e.g.
@@ -50,6 +53,10 @@ public sealed class SessionService(
         var mode = req.PermissionMode ?? ClaudeCommand.DefaultPermissionMode;
         var projectDir = WslPath.ToLinux(req.ProjectDir);
         var role = req.Manager ? SessionRoles.Manager : SessionRoles.Worker;
+        ValidateAppearance(req.Icon, req.Color);
+        // No icon given: guess one from the folder. It is only used if the session has none
+        // stored yet, so restarting never replaces an icon the owner picked.
+        var guessedIcon = req.Icon is null && Directory.Exists(projectDir) ? iconGuesser.Guess(projectDir) : null;
 
         using var _ = await LockAsync(req.Id, ct);
         if (await tmux.FindAsync(req.Id, ct) is not null)
@@ -83,7 +90,8 @@ public sealed class SessionService(
 
         // Order matters: the database row first (status 'starting'), then tmux. If anything
         // fails, we close the window and mark the row stopped.
-        await sessions.MarkStartingAsync(req.Id, projectDir, tmux.DisplayTarget(req.Id), role, Tokens.Hash(token), ct: ct);
+        await sessions.MarkStartingAsync(req.Id, projectDir, tmux.DisplayTarget(req.Id), role, Tokens.Hash(token),
+            icon: req.Icon, guessedIcon: guessedIcon, color: req.Color, ct: ct);
         // Prompts left over from a previous run of this id belong to a Claude Code that's gone.
         await permissions.ExpireForSessionAsync(req.Id, ct);
         IReadOnlyList<ClaudeDialog> answered;
@@ -196,6 +204,38 @@ public sealed class SessionService(
         return await messages.HistoryAsync(id, Math.Clamp(limit, 1, 500), ct);
     }
 
+    /// <summary>The owner changes a session's tile in the UI picker.</summary>
+    public async Task<SessionInfo> SetAppearanceAsync(Caller caller, string id, AppearanceRequest req, CancellationToken ct)
+    {
+        if (!caller.IsOwner)
+        {
+            throw HubException.Forbidden("Only the owner changes session icons and colours.");
+        }
+
+        SessionId.Validate(id);
+        ValidateAppearance(req.Icon, req.Color);
+        if (!await sessions.SetAppearanceAsync(id, req.Icon, req.Color, ct))
+        {
+            throw HubException.NotFound($"No session named '{id}'.");
+        }
+
+        events.Publish("sessions", new { id });
+        return await GetInfoAsync(id, ct);
+    }
+
+    private void ValidateAppearance(string? icon, short? color)
+    {
+        if (icon is not null && !icons.Contains(icon))
+        {
+            throw HubException.BadRequest($"Unknown icon '{icon}'. GET /api/icons lists the available ones.");
+        }
+
+        if (color is < 0 or > 7)
+        {
+            throw HubException.BadRequest("Color must be 0-7.");
+        }
+    }
+
     public async Task<IReadOnlyList<Message>> SearchAsync(Caller caller, string query, string? sessionId, int limit, CancellationToken ct)
     {
         RequireControl(caller);
@@ -253,7 +293,9 @@ public sealed class SessionService(
         row.ProjectDir,
         row.StartedAt,
         IdleSeconds: window is null ? null : (int)(DateTimeOffset.UtcNow - window.LastActivity).TotalSeconds,
-        Activity: window is { Dead: false } && row.Status != "stopped" ? activity.Get(row.Id) : null);
+        Activity: window is { Dead: false } && row.Status != "stopped" ? activity.Get(row.Id) : null,
+        Icon: row.Icon,
+        Color: row.Color);
 
     private async Task RequireRunningAsync(string id, CancellationToken ct)
     {

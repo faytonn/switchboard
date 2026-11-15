@@ -2,7 +2,14 @@ namespace Switchboard.Hub;
 
 // JSON bodies of the hub API. ASP.NET Core writes them in camelCase.
 
-public sealed record StartSessionRequest(string Id, string ProjectDir, string? PermissionMode = null, bool Manager = false);
+/// <param name="Icon">Optional Lucide icon name for the UI tile (GET /api/icons lists them).
+/// Without one, the hub guesses from the folder name and README.</param>
+/// <param name="Color">Optional palette colour 0-7 for the tile.</param>
+public sealed record StartSessionRequest(
+    string Id, string ProjectDir, string? PermissionMode = null, bool Manager = false, string? Icon = null, short? Color = null);
+
+/// <summary>The owner's choice in the UI's tile picker. null icon = initials, null color = automatic.</summary>
+public sealed record AppearanceRequest(string? Icon, short? Color);
 
 public sealed record SendMessageRequest(string Text);
 
@@ -28,7 +35,9 @@ public sealed record SessionInfo(
     DateTimeOffset StartedAt,
     int? IdleSeconds,
     string? Activity = null,
-    MessagePreview? LastMessage = null);
+    MessagePreview? LastMessage = null,
+    string? Icon = null,
+    short? Color = null);
 
 public sealed record MessagePreview(string? From, string? To, string Body, DateTimeOffset CreatedAt);
 

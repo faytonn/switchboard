@@ -40,7 +40,7 @@
 
       <header id="chat-bar" class="chat-bar" hidden>
         <a href="#" class="icon-btn back" aria-label="Back to sessions"><span aria-hidden="true">‹</span></a>
-        <span id="chat-avatar"></span>
+        <button id="chat-avatar" class="tile-btn" type="button" aria-label="Change icon and colour" title="Change icon and colour"></button>
         <div class="chat-heading">
           <div class="chat-title-row">
             <span id="chat-title" class="chat-title"></span>
@@ -107,6 +107,28 @@
       <div class="actions">
         <button type="button" class="ghost" id="start-cancel">Cancel</button>
         <button type="submit" id="start-submit" class="primary">Start</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="tile-dialog">
+    <form id="tile-form" method="dialog">
+      <div class="picker-head">
+        <span id="tile-preview"></span>
+        <div>
+          <h2>Icon and colour</h2>
+          <p id="tile-for"></p>
+        </div>
+      </div>
+      <div class="picker-label">Colour</div>
+      <div id="tile-colors" class="swatches" role="radiogroup" aria-label="Colour"></div>
+      <div class="picker-label">Icon</div>
+      <input id="tile-search" type="search" placeholder="Search icons (ticket, database, notes…)" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Search icons">
+      <div id="tile-icons" class="icon-grid" role="radiogroup" aria-label="Icon"></div>
+      <p id="tile-status" class="form-status" role="status"></p>
+      <div class="actions">
+        <button type="button" class="ghost" id="tile-cancel">Cancel</button>
+        <button type="submit" class="primary" id="tile-save">Save</button>
       </div>
     </form>
   </dialog>

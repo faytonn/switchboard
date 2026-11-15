@@ -112,8 +112,17 @@ Claude Code channels, and every message is stored in Postgres.
 - `ActivityMonitor` reads each running session's screen every 2s: `working` when Claude Code's
   footer says "esc to interrupt", `approval` when a "Do you want to…" prompt is open (also
   catches sessions whose channel server can't relay prompts), else `idle`.
-- Session colours: a hash of the id picks one of 8 palette classes (`.c0`-`.c7`). Never set
-  colours with style attributes (CSP).
+- Session tiles: a Lucide icon (or initials) on one of 8 palette colours (`.c0`-`.c7`), stored
+  in `sessions.icon` / `sessions.color` (null colour = hash of the id). Icons come from
+  `wwwroot/icons/lucide.svg`, a sprite built by `scripts/build-icon-sprite.py` from
+  `scripts/icons.txt` (lucide-static 1.73.0, ISC, licence in `wwwroot/icons/`). The hub only
+  accepts icon names that are symbols in that sprite. Without an icon on start, `IconGuesser`
+  picks one from the folder name and README; a restart never overwrites a stored icon.
+  Never set colours with style attributes (CSP).
+- Radius: `--r` 6px for bubbles, tiles, cards, inputs, buttons; `--r-sm` 2px for the bubble
+  corner nearest its sender.
+- Tests against the test hub (7701): call the API with curl, never `./sb`. `./sb` loads `.env`,
+  which points at the owner's real hub on 7700.
 - UI screenshots: run a test hub on port 7701 against the `switchboard_test` database with the
   `sb-test` tmux session, and drive headless Edge over CDP from Windows node.
 - Phone access: `tailscale serve` on Windows proxies to `127.0.0.1:7700`, which WSL's
