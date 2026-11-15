@@ -17,17 +17,19 @@ public sealed class HubClient(HttpClient http)
     public async Task<string> StartAsync(string id, string projectDir, string? permissionMode, CancellationToken ct)
     {
         var result = await SendAsync(HttpMethod.Post, "api/sessions", new { id, projectDir, permissionMode }, ct);
-        var trust = result.GetProperty("trust").GetString() == "confirmed"
-            ? "answered the folder trust dialog"
-            : "folder was already trusted";
-        return $"Started session '{id}' in {projectDir} ({trust}). It is ready for messages.";
+        var dialogs = result.GetProperty("dialogs").EnumerateArray().Select(d => d.GetString()).ToList();
+        var answered = dialogs.Count == 0 ? "" : $" (answered: {string.Join(", ", dialogs)})";
+        return $"Started session '{id}' in {projectDir}{answered}. Its channel is connected; it is ready for messages.";
     }
 
     public async Task<string> SendAsync(string id, string text, CancellationToken ct)
     {
         var result = await SendAsync(HttpMethod.Post, $"api/sessions/{Uri.EscapeDataString(id)}/messages", new { text }, ct);
-        return $"Message #{result.GetProperty("messageId").GetInt64()} delivered to '{id}'. " +
-               "Use read_screen to see its answer; it may take a while to finish.";
+        var messageId = result.GetProperty("messageId").GetInt64();
+        return result.GetProperty("delivered").GetBoolean()
+            ? $"Message #{messageId} delivered to '{id}'. Its reply will arrive as a channel message from=\"{id}\"; " +
+              "you don't need to poll. End your turn if there is nothing else to do."
+            : $"Message #{messageId} is queued: '{id}' has no channel connection right now. It will be delivered when it reconnects.";
     }
 
     public async Task<string> ReadScreenAsync(string id, int scrollback, CancellationToken ct)
@@ -43,9 +45,10 @@ public sealed class HubClient(HttpClient http)
         foreach (var s in result.EnumerateArray())
         {
             var idle = s.GetProperty("idleSeconds") is { ValueKind: JsonValueKind.Number } i ? $", idle {i.GetInt32()}s" : "";
+            var channel = s.GetProperty("channel").GetBoolean() ? "connected" : "offline";
             text.AppendLine(
                 $"- {s.GetProperty("id").GetString()} ({s.GetProperty("role").GetString()}): " +
-                $"{s.GetProperty("status").GetString()}, window {s.GetProperty("window").GetString()}{idle}, " +
+                $"{s.GetProperty("status").GetString()}, window {s.GetProperty("window").GetString()}, channel {channel}{idle}, " +
                 $"dir {s.GetProperty("projectDir").GetString()}");
         }
 

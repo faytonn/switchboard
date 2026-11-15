@@ -3,6 +3,7 @@ using Switchboard.Core.Data;
 using Switchboard.Core.Tmux;
 using Switchboard.Hub;
 using Switchboard.Hub.Auth;
+using Switchboard.Hub.Channels;
 
 var options = HubOptions.FromEnvironment();
 var connectionString = Environment.GetEnvironmentVariable("SWITCHBOARD_DB")
@@ -17,6 +18,7 @@ builder.Services.AddSingleton(NpgsqlDataSource.Create(connectionString));
 builder.Services.AddSingleton<SessionStore>();
 builder.Services.AddSingleton<MessageStore>();
 builder.Services.AddSingleton(TmuxClient.FromEnvironment());
+builder.Services.AddSingleton<ChannelHub>();
 builder.Services.AddSingleton<SessionService>();
 builder.Services.AddSingleton<AgentAuthFilter>();
 
@@ -29,10 +31,16 @@ if (applied.Count > 0)
     app.Logger.LogInformation("Applied migrations: {Versions}", string.Join(", ", applied));
 }
 
-if (!File.Exists(options.ManagerDll))
+foreach (var dll in new[] { options.ManagerDll, options.ChannelDll })
 {
-    app.Logger.LogWarning("Manager MCP server not built yet ({Path}). Manager sessions can't start until it is.", options.ManagerDll);
+    if (!File.Exists(dll))
+    {
+        app.Logger.LogWarning("MCP server not built yet ({Path}). Sessions can't start until it is.", dll);
+    }
 }
+
+// Pings every 30s keep idle channel connections alive and notice dead ones.
+app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(30) });
 
 // Turn known errors into {"error": "..."} with a fitting status, so API clients (and the
 // manager's tools) get a readable message instead of an HTML error page.
@@ -78,5 +86,29 @@ api.MapPost("/sessions/{id}/stop", async (string id, StopSessionRequest? req, Ht
     await svc.StopAsync(Caller.From(ctx), id, req ?? new StopSessionRequest(), ctx.RequestAborted);
     return Results.NoContent();
 });
+
+// Channel servers connect here (WebSocket) to receive messages for their session.
+// The session is whoever owns the token; one session can't listen in on another's messages.
+api.MapGet("/channel", async (HttpContext ctx, ChannelHub hub) =>
+{
+    var caller = Caller.From(ctx);
+    if (caller.SessionId is null)
+    {
+        return Results.Json(new { error = "Only sessions connect a channel." }, statusCode: StatusCodes.Status403Forbidden);
+    }
+
+    if (!ctx.WebSockets.IsWebSocketRequest)
+    {
+        return Results.Json(new { error = "Expected a WebSocket upgrade." }, statusCode: StatusCodes.Status400BadRequest);
+    }
+
+    using var socket = await ctx.WebSockets.AcceptWebSocketAsync();
+    await hub.RunAsync(caller.SessionId, socket, ctx.RequestAborted);
+    return Results.Empty;
+});
+
+// The channel server's reply tool posts here.
+api.MapPost("/channel/reply", (ReplyRequest req, HttpContext ctx, SessionService svc) =>
+    svc.ReplyAsync(Caller.From(ctx), req, ctx.RequestAborted));
 
 app.Run();

@@ -53,10 +53,28 @@ Claude Code channels, and every message is stored in Postgres.
 
 ## Channels (research preview)
 
-- Custom channel servers need `claude --dangerously-load-development-channels server:<name>`.
-  This shows a warning dialog on every launch. Answer it with `DialogConfirmer` and a
-  `ClaudeDialog` for the warning, never with raw keys.
-- Set `MCP_PROTOCOL_NEGOTIATION=legacy` for the channel server, or Claude Code may not register it
-  as a channel.
+- Every hub-started session runs `Switchboard.Channel` (MCP server `switchboard-channel`),
+  launched with `--dangerously-load-development-channels server:switchboard-channel`. The
+  warning it shows is answered by `DialogConfirmer.ConfirmAllAsync` with
+  `ClaudeDialog.DevChannels`, which also requires the `Channels:` line to list exactly our
+  channel. Never answer it with raw keys.
+- Facts verified on Claude Code 2.1.325 (phase 4 test):
+  - The server must pin `ProtocolVersion = "2025-11-25"`. Revision 2026-07-28 has no initialize
+    handshake, so there is no session to push into and the channel never registers.
+    `MCP_PROTOCOL_NEGOTIATION` is not needed.
+  - The capability value must be a `JsonElement` (`{}`); an anonymous object makes `initialize`
+    fail with a bare `-32603 An error occurred.` Options passed to `SendNotificationAsync`
+    need an explicit `TypeInfoResolver`.
+  - Servers from `--mcp-config` work as channels. The startup banner "no MCP server configured
+    with that name" is wrong; `--debug` logs "Channel notifications registered".
+  - A channel event wakes an idle session and starts a turn.
+- Delivery: messages are saved first, then the hub's per-connection loop sends every
+  undelivered row from Postgres in id order; the channel server acks after pushing, and the ack
+  sets `delivered_at`. Offline sessions get their queue on reconnect. At least once: a rare
+  duplicate is possible after a dropped connection.
+- Replies go out through the `reply` tool (HTTP `POST /api/channel/reply`): to `owner`, or to a
+  session that has messaged the caller.
+- `sb start` doesn't add the channel. It is a low-level tmux debug tool; start real sessions
+  through the hub.
 - MCP stdio servers must write logs to stderr only. stdout is the protocol.
 - Docs: https://code.claude.com/docs/en/channels and https://code.claude.com/docs/en/channels-reference

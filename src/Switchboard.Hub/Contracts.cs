@@ -8,22 +8,29 @@ public sealed record SendMessageRequest(string Text);
 
 public sealed record StopSessionRequest(bool Force = false);
 
-/// <summary>A session as the API reports it: the database row plus the live tmux state.</summary>
+/// <param name="To">"owner", or the id of a session that has messaged the caller.</param>
+public sealed record ReplyRequest(string To, string Text);
+
+/// <summary>A session as the API reports it: the database row plus the live state.</summary>
 /// <param name="Status">From Postgres: starting, running or stopped.</param>
 /// <param name="Window">From tmux: running, exited (Claude Code quit, window kept) or missing.</param>
+/// <param name="Channel">True while the session's channel server is connected to the hub.</param>
 public sealed record SessionInfo(
     string Id,
     string Role,
     string Status,
     string Window,
     int? ExitStatus,
+    bool Channel,
     string ProjectDir,
     DateTimeOffset StartedAt,
     int? IdleSeconds);
 
-/// <param name="Trust">"confirmed" if we answered the folder trust dialog, "not-shown" if there was none.</param>
-public sealed record StartSessionResponse(SessionInfo Session, string Trust);
+/// <param name="Dialogs">The startup dialogs we answered, e.g. ["folder trust", "development channels warning"].</param>
+public sealed record StartSessionResponse(SessionInfo Session, IReadOnlyList<string> Dialogs);
 
-public sealed record SendMessageResponse(long MessageId, DateTimeOffset? DeliveredAt);
+/// <param name="Delivered">True if the session's channel pushed it into Claude Code; false if
+/// it is queued (the channel is offline or slow) and will be delivered on reconnect.</param>
+public sealed record SendMessageResponse(long MessageId, bool Delivered);
 
 public sealed record ScreenResponse(string Id, string Screen);

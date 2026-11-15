@@ -22,22 +22,59 @@ public sealed class MessageStore(NpgsqlDataSource db)
     /// <see cref="MarkDeliveredAsync"/>. If delivery fails, the row still exists and shows it
     /// never arrived, rather than the message vanishing.
     /// </summary>
-    public async Task<Message> AddAsync(string? from, string? to, string body, CancellationToken ct = default)
+    public async Task<Message> AddAsync(string? from, string? to, string body, CancellationToken ct = default) =>
+        await AddAsync(from, to, body, deliveredNow: false, ct);
+
+    /// <param name="deliveredNow">True when storing the message already is the delivery, as
+    /// for messages to the owner, who reads them from the database (the web UI in phase 5).</param>
+    public async Task<Message> AddAsync(string? from, string? to, string body, bool deliveredNow, CancellationToken ct = default)
     {
         await using var cmd = db.CreateCommand($"""
-            insert into messages (from_session, to_session, body)
-            values ($1, $2, $3)
+            insert into messages (from_session, to_session, body, delivered_at)
+            values ($1, $2, $3, case when $4 then now() end)
             returning {Columns}
             """);
         cmd.Parameters.Add(NullableText(from));
         cmd.Parameters.Add(NullableText(to));
         cmd.Parameters.Add(new() { Value = body });
+        cmd.Parameters.Add(new() { Value = deliveredNow });
         return (await ReadAsync(cmd, ct)).Single();
     }
 
+    /// <summary>
+    /// Messages to <paramref name="sessionId"/> that haven't been delivered, oldest first,
+    /// skipping ids up to <paramref name="afterId"/> (already sent, waiting for an ack).
+    /// </summary>
+    public async Task<IReadOnlyList<Message>> UndeliveredAsync(string sessionId, long afterId, int limit, CancellationToken ct = default)
+    {
+        // Matches the partial index messages_undelivered_idx exactly, so this stays fast.
+        await using var cmd = db.CreateCommand($"""
+            select {Columns} from messages
+            where to_session = $1 and delivered_at is null and id > $2
+            order by id
+            limit $3
+            """);
+        cmd.Parameters.Add(new() { Value = sessionId });
+        cmd.Parameters.Add(new() { Value = afterId });
+        cmd.Parameters.Add(new() { Value = limit });
+        return await ReadAsync(cmd, ct);
+    }
+
+    /// <summary>Has <paramref name="from"/> ever sent a message to <paramref name="to"/>?</summary>
+    public async Task<bool> HasMessagedAsync(string from, string to, CancellationToken ct = default)
+    {
+        await using var cmd = db.CreateCommand(
+            "select exists (select 1 from messages where from_session = $1 and to_session = $2)");
+        cmd.Parameters.Add(new() { Value = from });
+        cmd.Parameters.Add(new() { Value = to });
+        return (bool)(await cmd.ExecuteScalarAsync(ct))!;
+    }
+
+    /// <summary>Sets delivered_at, unless already set (a resent message keeps its first time).</summary>
     public async Task MarkDeliveredAsync(long id, CancellationToken ct = default)
     {
-        await using var cmd = db.CreateCommand("update messages set delivered_at = now() where id = $1");
+        await using var cmd = db.CreateCommand(
+            "update messages set delivered_at = now() where id = $1 and delivered_at is null");
         cmd.Parameters.Add(new() { Value = id });
         await cmd.ExecuteNonQueryAsync(ct);
     }

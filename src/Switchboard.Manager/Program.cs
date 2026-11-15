@@ -31,7 +31,7 @@ var tools = new McpServerPrimitiveCollection<McpServerTool>
         ([Description("Session id.")] string id,
          [Description("The message. Multi-line text arrives as one message.")] string text,
          CancellationToken ct) => hub.SendAsync(id, text, ct),
-        new() { Name = "send_message", Description = "Send a message to a session, as if typed at its prompt. Returns once delivered, not when the session has answered." }),
+        new() { Name = "send_message", Description = "Send a message to a session through its channel. Returns once delivered, not when the session has answered; its reply arrives later as a channel message." }),
 
     McpServerTool.Create(
         ([Description("Session id.")] string id,
@@ -58,10 +58,14 @@ var options = new McpServerOptions
     ServerInstructions = $"""
         You are the Switchboard manager (session '{sessionId}'). These tools start and control
         other Claude Code sessions, each in its own tmux window, through the Switchboard hub.
-        - send_message returns as soon as the text is typed in. The session then works on its
-          own. Use read_screen to check its progress or answer, and wait between checks.
-        - read_screen shows the terminal as text, including any dialog the session is stuck on.
-        - Sessions can't message you back yet; read their screens instead.
+        - send_message delivers the text through the session's channel and returns at once.
+          The session then works on its own and answers with its reply tool. Its answer
+          arrives in YOUR session as a channel message from="<its id>". Don't poll for it:
+          end your turn, and you will be woken when the reply comes.
+        - read_screen shows a session's terminal as text. Use it when a session seems stuck
+          (for example on a permission prompt), not to wait for answers.
+        - Your own user writes to you through the channel with from="owner". Answer them with
+          the reply tool (to="owner"), since they may not be watching your terminal.
         """,
     ToolCollection = tools,
 };

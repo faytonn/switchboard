@@ -6,13 +6,26 @@ namespace Switchboard.Core.Claude;
 /// <param name="Name">Name for messages, e.g. "folder trust".</param>
 /// <param name="Markers">Text that must all be on screen. Pick text only the dialog shows.</param>
 /// <param name="Option">The option to choose, e.g. "Yes, I trust this folder".</param>
-public sealed record ClaudeDialog(string Name, IReadOnlyList<string> Markers, string Option)
+/// <param name="ExactLines">Lines that must appear exactly (after trimming). Use these when a
+/// substring match would be unsafe, such as the list of channels about to be loaded.</param>
+public sealed record ClaudeDialog(string Name, IReadOnlyList<string> Markers, string Option, IReadOnlyList<string>? ExactLines = null)
 {
     /// <summary>The dialog Claude Code shows the first time it opens a folder.</summary>
     public static readonly ClaudeDialog FolderTrust = new(
         "folder trust",
         ["Is this a project you created or one you trust?", "Yes, I trust this folder"],
         "Yes, I trust this folder");
+
+    /// <summary>
+    /// The warning shown on every start with --dangerously-load-development-channels. We only
+    /// confirm it when the "Channels:" line lists exactly the channels we asked for. A substring
+    /// check would also pass for "Channels: server:switchboard-channel, server:something-else".
+    /// </summary>
+    public static ClaudeDialog DevChannels(IReadOnlyList<string> channels) => new(
+        "development channels warning",
+        ["WARNING: Loading development channels", "I am using this for local development"],
+        "I am using this for local development",
+        ExactLines: [$"Channels: {string.Join(", ", channels)}"]);
 }
 
 public enum ScreenState
@@ -37,7 +50,7 @@ public static class ClaudeScreen
 
     public static ScreenState Classify(string screen, ClaudeDialog dialog)
     {
-        var lines = screen.Split('\n').Select(l => l.TrimEnd()).ToList();
+        var lines = Lines(screen);
 
         // Check the prompt first. Earlier chat output can contain the dialog's words, but a
         // visible input box means no dialog is open right now.
@@ -50,15 +63,17 @@ public static class ClaudeScreen
         // last line, which shows the menu is still open and waiting.
         var lastLine = lines.LastOrDefault(l => l.Length > 0) ?? "";
         var allMarkers = dialog.Markers.All(m => screen.Contains(m, StringComparison.Ordinal));
-        return allMarkers && lastLine.Contains(MenuFooter, StringComparison.Ordinal)
+        var exactLines = (dialog.ExactLines ?? []).All(x => lines.Any(l => l.Trim() == x));
+        return allMarkers && exactLines && lastLine.Contains(MenuFooter, StringComparison.Ordinal)
             ? ScreenState.Dialog
             : ScreenState.Unknown;
     }
 
     /// <summary>True when the menu pointer (❯) is on the line with <paramref name="option"/>.</summary>
     public static bool IsSelected(string screen, string option) =>
-        screen.Split('\n').Any(l =>
-            l.TrimStart().StartsWith(Pointer) && l.Contains(option, StringComparison.Ordinal));
+        Lines(screen).Any(l => l.TrimStart().StartsWith(Pointer) && l.Contains(option, StringComparison.Ordinal));
+
+    public static bool HasInputPrompt(string screen) => HasInputPrompt(Lines(screen));
 
     // Claude Code's input box is a "❯" line with a horizontal rule (────) right above and
     // right below. Dialog menus also use "❯" for the selected option, but without rules
@@ -75,6 +90,8 @@ public static class ClaudeScreen
 
         return false;
     }
+
+    private static List<string> Lines(string screen) => screen.Split('\n').Select(l => l.TrimEnd()).ToList();
 
     private static bool IsRule(string line)
     {

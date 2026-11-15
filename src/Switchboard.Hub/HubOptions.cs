@@ -15,6 +15,9 @@ public sealed class HubOptions
     /// <summary>The built Manager MCP server that manager sessions run.</summary>
     public required string ManagerDll { get; init; }
 
+    /// <summary>The built channel server that every session runs.</summary>
+    public required string ChannelDll { get; init; }
+
     public static HubOptions FromEnvironment()
     {
         var adminToken = Required("SWITCHBOARD_ADMIN_TOKEN");
@@ -30,6 +33,7 @@ public sealed class HubOptions
             AdminToken = adminToken,
             StateDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".switchboard"),
             ManagerDll = Path.Combine(root, "src", "Switchboard.Manager", "bin", "Debug", "net10.0", "Switchboard.Manager.dll"),
+            ChannelDll = Path.Combine(root, "src", "Switchboard.Channel", "bin", "Debug", "net10.0", "Switchboard.Channel.dll"),
         };
     }
 

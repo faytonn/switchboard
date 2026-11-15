@@ -5,6 +5,7 @@ using Switchboard.Core.Claude;
 using Switchboard.Core.Data;
 using Switchboard.Core.Tmux;
 using Switchboard.Hub.Auth;
+using Switchboard.Hub.Channels;
 
 namespace Switchboard.Hub;
 
@@ -17,13 +18,17 @@ public sealed class SessionService(
     TmuxClient tmux,
     SessionStore sessions,
     MessageStore messages,
+    ChannelHub channels,
     ILogger<SessionService> log)
 {
-    // The MCP server name inside a manager session. Claude Code names its tools
-    // mcp__switchboard-manager__start_session and so on.
+    // MCP server names inside a session. Claude Code names their tools after them, e.g.
+    // mcp__switchboard-manager__start_session and mcp__switchboard-channel__reply.
     public const string ManagerServerName = "switchboard-manager";
+    public const string ChannelServerName = "switchboard-channel";
 
-    private static readonly TimeSpan TrustTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan StartupTimeout = TimeSpan.FromSeconds(45);
+    private static readonly TimeSpan ChannelConnectTimeout = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan DeliveryTimeout = TimeSpan.FromSeconds(5);
 
     // One lock per session id. Without it, two requests could start the same id at once:
     // both see "no window yet", both create one, and tmux ends up with two windows of that name.
@@ -51,28 +56,44 @@ public sealed class SessionService(
         // A fresh token per start. Claude Code passes it to the session's MCP servers through
         // their config file. The old run's token stops working because its hash is replaced.
         var token = Tokens.New();
-        var extraArgs = new List<string>();
+        var configPath = WriteMcpConfig(req.Id, token, req.Manager);
+
+        var channelList = new[] { $"server:{ChannelServerName}" };
+        var allowedTools = new List<string> { $"mcp__{ChannelServerName}" };
         if (req.Manager)
         {
-            var configPath = WriteManagerConfig(req.Id, token);
-            // --allowedTools pre-approves this one server's tools (a bare server name matches
-            // all its tools), so the manager doesn't stop at a permission prompt for each call.
-            // Everything else still follows the permission mode.
-            extraArgs.AddRange(["--mcp-config", configPath, "--allowedTools", $"mcp__{ManagerServerName}"]);
+            allowedTools.Add($"mcp__{ManagerServerName}");
         }
 
-        var command = ClaudeCommand.Build(mode, extraArgs);
+        var command = ClaudeCommand.Build(mode,
+        [
+            "--mcp-config", configPath,
+            // Custom channels aren't on Anthropic's allowlist during the research preview, so
+            // they need this flag, which shows a warning we answer below.
+            "--dangerously-load-development-channels", .. channelList,
+            // Pre-approve only our own servers' tools (a bare server name matches all its tools),
+            // so replies and manager calls don't stop at a permission prompt. Everything else
+            // still follows the permission mode. This flag takes several values, so it goes last.
+            "--allowedTools", .. allowedTools,
+        ]);
 
-        // Order matters: the database row first (status 'starting'), then tmux. If tmux fails,
-        // we mark the row stopped. The other order could leave a running session that the
-        // database knows nothing about.
+        // Order matters: the database row first (status 'starting'), then tmux. If anything
+        // fails, we close the window and mark the row stopped.
         await sessions.MarkStartingAsync(req.Id, projectDir, tmux.DisplayTarget(req.Id), role, Tokens.Hash(token), ct: ct);
-        string trust;
+        IReadOnlyList<ClaudeDialog> answered;
         try
         {
             await tmux.StartAsync(req.Id, projectDir, command, ct);
-            var result = await new DialogConfirmer(tmux).ConfirmAsync(req.Id, ClaudeDialog.FolderTrust, TrustTimeout, ct);
-            trust = result == ConfirmResult.Confirmed ? "confirmed" : "not-shown";
+            answered = await new DialogConfirmer(tmux).ConfirmAllAsync(
+                req.Id, [ClaudeDialog.FolderTrust, ClaudeDialog.DevChannels(channelList)], StartupTimeout, ct);
+
+            if (!await channels.WaitForConnectionAsync(req.Id, ChannelConnectTimeout, ct))
+            {
+                throw new HubException(StatusCodes.Status502BadGateway,
+                    $"Claude Code started, but its channel server didn't connect within {ChannelConnectTimeout.TotalSeconds:0}s. " +
+                    $"Check `/mcp` in the session, or ~/.claude/debug with --debug.");
+            }
+
             await sessions.MarkRunningAsync(req.Id, ct);
         }
         catch
@@ -82,25 +103,53 @@ public sealed class SessionService(
         }
 
         log.LogInformation("{Caller} started {Role} session {Id} in {Dir} ({Mode})", caller.Describe(), role, req.Id, projectDir, mode);
-        return new StartSessionResponse(await GetInfoAsync(req.Id, ct), trust);
+        return new StartSessionResponse(await GetInfoAsync(req.Id, ct), answered.Select(d => d.Name).ToList());
     }
 
+    /// <summary>Owner or manager sends a message into a session through its channel.</summary>
     public async Task<SendMessageResponse> SendAsync(Caller caller, string id, SendMessageRequest req, CancellationToken ct)
     {
         RequireControl(caller);
         RequireNotSelf(caller, id, "send a message to");
-        if (string.IsNullOrWhiteSpace(req.Text))
-        {
-            throw HubException.BadRequest("Message text is empty.");
-        }
-
+        RequireText(req.Text);
         await RequireRunningAsync(id, ct);
 
-        // Save first (not delivered), then type it into tmux, then mark it delivered.
+        // Save first (not delivered). The channel connection's delivery loop picks it up from
+        // the database. If the channel is offline it simply waits there.
         var message = await messages.AddAsync(from: caller.SessionId, to: id, req.Text, ct);
-        await tmux.SendTextAsync(id, req.Text, ct: ct);
-        await messages.MarkDeliveredAsync(message.Id, ct);
-        return new SendMessageResponse(message.Id, DateTimeOffset.UtcNow);
+        var delivered = await channels.DeliverAndWaitAsync(id, message.Id, DeliveryTimeout, ct);
+        return new SendMessageResponse(message.Id, delivered);
+    }
+
+    /// <summary>A session answers through its channel server's reply tool.</summary>
+    public async Task<SendMessageResponse> ReplyAsync(Caller caller, ReplyRequest req, CancellationToken ct)
+    {
+        var from = caller.SessionId ?? throw HubException.Forbidden("Only sessions reply; the owner uses /api/sessions/{id}/messages.");
+        RequireText(req.Text);
+
+        if (req.To == "owner")
+        {
+            // The owner reads messages from the database, so storing it is delivering it.
+            var toOwner = await messages.AddAsync(from, to: null, req.Text, deliveredNow: true, ct);
+            return new SendMessageResponse(toOwner.Id, Delivered: true);
+        }
+
+        SessionId.Validate(req.To);
+        if (req.To == from)
+        {
+            throw HubException.BadRequest("A session can't reply to itself.");
+        }
+
+        // Replies may only go back to someone who wrote to you. Free session-to-session
+        // messaging, with its own rules, comes in phase 6.
+        if (!await messages.HasMessagedAsync(from: req.To, to: from, ct))
+        {
+            throw HubException.Forbidden($"'{req.To}' hasn't sent you a message, so you can't reply to it. Reply to \"owner\" instead.");
+        }
+
+        var message = await messages.AddAsync(from, req.To, req.Text, ct);
+        var delivered = await channels.DeliverAndWaitAsync(req.To, message.Id, DeliveryTimeout, ct);
+        return new SendMessageResponse(message.Id, delivered);
     }
 
     public async Task<ScreenResponse> ReadScreenAsync(Caller caller, string id, int scrollback, CancellationToken ct)
@@ -158,12 +207,13 @@ public sealed class SessionService(
         return ToInfo(row, await tmux.FindAsync(id, ct));
     }
 
-    private static SessionInfo ToInfo(SessionRow row, TmuxWindow? window) => new(
+    private SessionInfo ToInfo(SessionRow row, TmuxWindow? window) => new(
         row.Id,
         row.Role,
         row.Status,
         Window: window is null ? "missing" : window.Dead ? "exited" : "running",
         ExitStatus: window?.Dead == true ? window.ExitStatus : null,
+        Channel: channels.IsConnected(row.Id),
         row.ProjectDir,
         row.StartedAt,
         IdleSeconds: window is null ? null : (int)(DateTimeOffset.UtcNow - window.LastActivity).TotalSeconds);
@@ -184,6 +234,14 @@ public sealed class SessionService(
         }
     }
 
+    private static void RequireText(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            throw HubException.BadRequest("Message text is empty.");
+        }
+    }
+
     private static void RequireControl(Caller caller)
     {
         if (!caller.CanControlSessions)
@@ -192,8 +250,7 @@ public sealed class SessionService(
         }
     }
 
-    // A session typing into its own tmux window, or closing it, would cut off the very tool
-    // call that asked for it.
+    // A session closing its own tmux window would cut off the very tool call that asked for it.
     private static void RequireNotSelf(Caller caller, string id, string action)
     {
         if (caller.SessionId == id)
@@ -203,36 +260,25 @@ public sealed class SessionService(
     }
 
     /// <summary>
-    /// Writes ~/.switchboard/sessions/&lt;id&gt;.mcp.json for `claude --mcp-config`. It holds the
-    /// session's token, so only the owner may read it (mode 600). Passing the JSON on the
-    /// command line instead would show the token to anyone running `ps`.
+    /// Writes ~/.switchboard/sessions/&lt;id&gt;.mcp.json for `claude --mcp-config`: the channel
+    /// server for every session, plus the manager server for managers. It holds the session's
+    /// token, so only the owner may read it (mode 600). Passing the JSON on the command line
+    /// instead would show the token to anyone running `ps`.
     /// </summary>
-    private string WriteManagerConfig(string id, string token)
+    private string WriteMcpConfig(string id, string token, bool manager)
     {
-        if (!File.Exists(options.ManagerDll))
+        var env = new Dictionary<string, string>
         {
-            throw new HubException(StatusCodes.Status500InternalServerError,
-                $"Manager MCP server not built: {options.ManagerDll}. Start the hub with scripts/run-hub.sh, which builds it.");
-        }
-
-        var config = new
-        {
-            mcpServers = new Dictionary<string, object>
-            {
-                [ManagerServerName] = new
-                {
-                    // A login shell puts ~/.dotnet on PATH, as for tmux windows.
-                    command = "bash",
-                    args = new[] { "-lc", "exec dotnet \"$0\"", options.ManagerDll },
-                    env = new Dictionary<string, string>
-                    {
-                        ["SWITCHBOARD_HUB_URL"] = options.Url,
-                        ["SWITCHBOARD_TOKEN"] = token,
-                        ["SWITCHBOARD_SESSION_ID"] = id,
-                    },
-                },
-            },
+            ["SWITCHBOARD_HUB_URL"] = options.Url,
+            ["SWITCHBOARD_TOKEN"] = token,
+            ["SWITCHBOARD_SESSION_ID"] = id,
         };
+
+        var servers = new Dictionary<string, object> { [ChannelServerName] = DotnetServer(options.ChannelDll, env) };
+        if (manager)
+        {
+            servers[ManagerServerName] = DotnetServer(options.ManagerDll, env);
+        }
 
         var path = ConfigPath(id);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
@@ -249,14 +295,25 @@ public sealed class SessionService(
 
         using (var writer = new StreamWriter(path, fileOptions))
         {
-            writer.Write(JsonSerializer.Serialize(config, new JsonSerializerOptions { WriteIndented = true }));
+            writer.Write(JsonSerializer.Serialize(new { mcpServers = servers }, new JsonSerializerOptions { WriteIndented = true }));
         }
 
         return path;
     }
 
-    // File.Delete ignores a missing file but throws if the folder is missing, which it is
-    // until the first manager session starts.
+    private static object DotnetServer(string dll, Dictionary<string, string> env)
+    {
+        if (!File.Exists(dll))
+        {
+            throw new HubException(StatusCodes.Status500InternalServerError,
+                $"MCP server not built: {dll}. Start the hub with scripts/run-hub.sh, which builds it.");
+        }
+
+        // A login shell puts ~/.dotnet on PATH, as for tmux windows.
+        return new { command = "bash", args = new[] { "-lc", "exec dotnet \"$0\"", dll }, env };
+    }
+
+    // File.Delete ignores a missing file but throws if the folder is missing.
     private void DeleteConfig(string id)
     {
         var path = ConfigPath(id);
