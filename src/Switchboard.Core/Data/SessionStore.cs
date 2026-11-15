@@ -21,12 +21,16 @@ public sealed record SessionRow(
     DateTimeOffset StartedAt,
     DateTimeOffset? StoppedAt,
     string? Icon = null,
-    short? Color = null);
+    short? Color = null,
+    string? Model = null,
+    string? Effort = null,
+    bool Connectors = false);
 
 /// <summary>The sessions table: which session ids exist, their role, and whether they run.</summary>
 public sealed class SessionStore(NpgsqlDataSource db)
 {
-    private const string Columns = "id, project_dir, tmux_target, status, role, created_at, started_at, stopped_at, icon, color";
+    private const string Columns =
+        "id, project_dir, tmux_target, status, role, created_at, started_at, stopped_at, icon, color, model, effort, connectors";
 
     /// <summary>
     /// Records a (re)start. Starting an id that ran before reuses its row, so the new run keeps
@@ -38,11 +42,12 @@ public sealed class SessionStore(NpgsqlDataSource db)
     public async Task MarkStartingAsync(
         string id, string projectDir, string tmuxTarget, string role, byte[]? tokenHash,
         string status = "starting", string? icon = null, string? guessedIcon = null, short? color = null,
+        string? model = null, string? effort = null, bool connectors = false,
         CancellationToken ct = default)
     {
         await using var cmd = db.CreateCommand("""
-            insert into sessions (id, project_dir, tmux_target, status, role, token_hash, icon, color)
-            values ($1, $2, $3, $4, $5, $6, coalesce($7, $8), $9)
+            insert into sessions (id, project_dir, tmux_target, status, role, token_hash, icon, color, model, effort, connectors)
+            values ($1, $2, $3, $4, $5, $6, coalesce($7, $8), $9, $10, $11, $12)
             on conflict (id) do update
                set project_dir = excluded.project_dir,
                    tmux_target = excluded.tmux_target,
@@ -51,6 +56,9 @@ public sealed class SessionStore(NpgsqlDataSource db)
                    token_hash  = excluded.token_hash,
                    icon        = coalesce($7, sessions.icon, $8),
                    color       = coalesce($9, sessions.color),
+                   model       = excluded.model,
+                   effort      = excluded.effort,
+                   connectors  = excluded.connectors,
                    started_at  = now(),
                    stopped_at  = null
             """);
@@ -63,6 +71,9 @@ public sealed class SessionStore(NpgsqlDataSource db)
         cmd.Parameters.Add(new() { NpgsqlDbType = NpgsqlDbType.Text, Value = (object?)icon ?? DBNull.Value });
         cmd.Parameters.Add(new() { NpgsqlDbType = NpgsqlDbType.Text, Value = (object?)guessedIcon ?? DBNull.Value });
         cmd.Parameters.Add(new() { NpgsqlDbType = NpgsqlDbType.Smallint, Value = (object?)color ?? DBNull.Value });
+        cmd.Parameters.Add(new() { NpgsqlDbType = NpgsqlDbType.Text, Value = (object?)model ?? DBNull.Value });
+        cmd.Parameters.Add(new() { NpgsqlDbType = NpgsqlDbType.Text, Value = (object?)effort ?? DBNull.Value });
+        cmd.Parameters.Add(new() { Value = connectors });
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -130,7 +141,10 @@ public sealed class SessionStore(NpgsqlDataSource db)
                 StartedAt: reader.GetFieldValue<DateTimeOffset>(6),
                 StoppedAt: reader.IsDBNull(7) ? null : reader.GetFieldValue<DateTimeOffset>(7),
                 Icon: reader.IsDBNull(8) ? null : reader.GetString(8),
-                Color: reader.IsDBNull(9) ? null : reader.GetInt16(9)));
+                Color: reader.IsDBNull(9) ? null : reader.GetInt16(9),
+                Model: reader.IsDBNull(10) ? null : reader.GetString(10),
+                Effort: reader.IsDBNull(11) ? null : reader.GetString(11),
+                Connectors: reader.GetBoolean(12)));
         }
 
         return list;

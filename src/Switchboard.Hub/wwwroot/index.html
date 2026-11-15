@@ -102,7 +102,26 @@
           <option value="auto">auto · a classifier decides</option>
         </select>
       </label>
+      <div class="field-row">
+        <label>Model
+          <select name="model">
+            <option value="" selected>Default (Opus; Sonnet for a manager)</option>
+            <option value="opus">Opus · strongest</option>
+            <option value="sonnet">Sonnet · faster</option>
+            <option value="haiku">Haiku · fastest</option>
+          </select>
+        </label>
+        <label>Effort
+          <select name="effort">
+            <option value="low">Low · quickest</option>
+            <option value="medium" selected>Medium</option>
+            <option value="high">High</option>
+            <option value="xhigh">Extra high</option>
+          </select>
+        </label>
+      </div>
       <label class="check"><input type="checkbox" name="manager"> Manager (can start and control other sessions)</label>
+      <label class="check"><input type="checkbox" name="connectors"> Also load my claude.ai connectors (Gmail, Notion, GitHub…). Slower turns.</label>
       <p id="start-status" class="form-status" role="status"></p>
       <div class="actions">
         <button type="button" class="ghost" id="start-cancel">Cancel</button>

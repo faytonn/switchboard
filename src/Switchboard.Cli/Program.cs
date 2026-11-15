@@ -42,20 +42,26 @@ catch (Exception e) when (e is CliException or TmuxException or ArgumentExceptio
 
 static async Task<int> Start(string id, string dir, string[] opts)
 {
-    RejectUnknown(opts, valueOptions: ["--mode", "--icon", "--color"], flags: ["--manager"]);
+    RejectUnknown(opts, valueOptions: ["--mode", "--icon", "--color", "--model", "--effort"], flags: ["--manager", "--connectors"]);
     SessionId.Validate(id);
     var mode = StringOption(opts, "--mode");
     var icon = StringOption(opts, "--icon");
     var color = IntOption(opts, "--color");
+    var model = StringOption(opts, "--model");
+    var effort = StringOption(opts, "--effort");
     var manager = opts.Contains("--manager");
+    var connectors = opts.Contains("--connectors");
     using var hub = new HubApi();
 
     Console.Error.WriteLine($"Starting '{id}' (this waits until its channel is connected)...");
-    var result = await hub.PostAsync("api/sessions", new { id, projectDir = dir, permissionMode = mode, manager, icon, color });
+    var result = await hub.PostAsync("api/sessions",
+        new { id, projectDir = dir, permissionMode = mode, manager, icon, color, model, effort, connectors });
     var session = result.GetProperty("session");
     var dialogs = result.GetProperty("dialogs").EnumerateArray().Select(d => d.GetString()).ToList();
     var tile = session.GetProperty("icon").GetString() ?? "initials";
     Console.WriteLine($"Started {session.GetProperty("role").GetString()} '{id}' in {session.GetProperty("projectDir").GetString()}, channel connected, icon {tile}.");
+    Console.WriteLine($"Model {session.GetProperty("model").GetString()}, effort {session.GetProperty("effort").GetString()}, " +
+                      (session.GetProperty("connectors").GetBoolean() ? "with your claude.ai connectors." : "Switchboard's MCP servers only."));
     if (dialogs.Count > 0)
     {
         Console.WriteLine($"Answered: {string.Join(", ", dialogs)}");
@@ -349,9 +355,13 @@ static int Usage()
     Console.Error.WriteLine("""
         Usage (session commands go through the hub: start it with scripts/run-hub.sh):
           sb start  <id> <project-dir> [--mode M] [--manager] [--icon NAME] [--color 0-7]
+                    [--model opus|sonnet|haiku|fable] [--effort low|medium|high|xhigh|max] [--connectors]
                                        start Claude Code with its channel; waits until connected
                                        M: acceptEdits (default), auto, plan, manual, dontAsk,
                                           bypassPermissions. --manager adds the manager tools.
+                                       Defaults: workers opus/medium, the manager sonnet/medium.
+                                       --connectors also loads your claude.ai connectors and plugin
+                                          MCP servers (slower turns; off by default).
                                        --icon: a Lucide name (sb icons lists them); without it
                                           the hub guesses from the folder name and README.
           sb icons                     list the icon names

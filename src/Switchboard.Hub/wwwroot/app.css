@@ -397,6 +397,8 @@ input:not([type=checkbox]), select {
 input:not([type=checkbox]):focus, select:focus { outline: none; border-color: var(--accent); }
 input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); }
 .actions { display: flex; justify-content: flex-end; gap: 8px; }
+.field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.field-row select { min-width: 0; }
 .form-status { margin: 0; min-height: 1.2em; font-size: 14px; color: var(--muted); }
 .form-status.error { color: var(--bad); }
 

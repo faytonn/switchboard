@@ -244,6 +244,8 @@ function renderChatHeader() {
   if (status.key === 'working') sub.append(el('span', 'working dots', 'working'));
   else if (status.key !== 'waiting') sub.append(status.text);
   if (status.key !== 'waiting') sub.append(' · ');
+  // "opus · medium" tells you at a glance why a session is quick or slow.
+  if (s.model) sub.append(`${s.model} · ${s.effort ?? 'medium'}${s.connectors ? ' · connectors' : ''} · `);
   sub.append(s.projectDir);
 
   // A clear, clickable "waiting for approval" chip: jumps to the Allow/Deny card, or opens the
@@ -706,7 +708,10 @@ async function submitStart(e) {
         id,
         projectDir: String(data.get('projectDir')).trim(),
         permissionMode: data.get('permissionMode'),
+        model: data.get('model') || null,
+        effort: data.get('effort'),
         manager: data.get('manager') === 'on',
+        connectors: data.get('connectors') === 'on',
       },
     });
     $('start-dialog').close();

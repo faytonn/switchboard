@@ -5,8 +5,14 @@ namespace Switchboard.Hub;
 /// <param name="Icon">Optional Lucide icon name for the UI tile (GET /api/icons lists them).
 /// Without one, the hub guesses from the folder name and README.</param>
 /// <param name="Color">Optional palette colour 0-7 for the tile.</param>
+/// <param name="Model">opus, sonnet, haiku, fable or a full model name. Default: sonnet for the
+/// manager (it mostly routes), opus for workers.</param>
+/// <param name="Effort">low, medium, high, xhigh or max. Default: medium.</param>
+/// <param name="Connectors">Also load the owner's claude.ai connectors and plugin MCP servers
+/// (Gmail, Notion, GitHub...). Off by default; only the owner can turn it on.</param>
 public sealed record StartSessionRequest(
-    string Id, string ProjectDir, string? PermissionMode = null, bool Manager = false, string? Icon = null, short? Color = null);
+    string Id, string ProjectDir, string? PermissionMode = null, bool Manager = false, string? Icon = null, short? Color = null,
+    string? Model = null, string? Effort = null, bool Connectors = false);
 
 /// <summary>The owner's choice in the UI's tile picker. null icon = initials, null color = automatic.</summary>
 public sealed record AppearanceRequest(string? Icon, short? Color);
@@ -37,7 +43,10 @@ public sealed record SessionInfo(
     string? Activity = null,
     MessagePreview? LastMessage = null,
     string? Icon = null,
-    short? Color = null);
+    short? Color = null,
+    string? Model = null,
+    string? Effort = null,
+    bool Connectors = false);
 
 public sealed record MessagePreview(string? From, string? To, string Body, DateTimeOffset CreatedAt);
 

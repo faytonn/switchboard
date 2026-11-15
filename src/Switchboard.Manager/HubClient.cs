@@ -14,9 +14,10 @@ public sealed class HubClient(HttpClient http)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
-    public async Task<string> StartAsync(string id, string projectDir, string? permissionMode, string? icon, CancellationToken ct)
+    public async Task<string> StartAsync(
+        string id, string projectDir, string? permissionMode, string? icon, string? model, string? effort, CancellationToken ct)
     {
-        var result = await SendAsync(HttpMethod.Post, "api/sessions", new { id, projectDir, permissionMode, icon }, ct);
+        var result = await SendAsync(HttpMethod.Post, "api/sessions", new { id, projectDir, permissionMode, icon, model, effort }, ct);
         var dialogs = result.GetProperty("dialogs").EnumerateArray().Select(d => d.GetString()).ToList();
         var answered = dialogs.Count == 0 ? "" : $" (answered: {string.Join(", ", dialogs)})";
         var tile = result.GetProperty("session").GetProperty("icon").GetString() ?? "initials";

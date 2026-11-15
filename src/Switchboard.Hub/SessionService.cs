@@ -50,9 +50,23 @@ public sealed class SessionService(
             throw HubException.Forbidden("Only the owner can start a manager session.");
         }
 
-        var mode = req.PermissionMode ?? ClaudeCommand.DefaultPermissionMode;
-        var projectDir = WslPath.ToLinux(req.ProjectDir);
+        // Your connectors reach your Gmail, Notion and GitHub, so only you can give a session
+        // access to them; the manager can't hand that out to the workers it starts.
+        if (req.Connectors && !caller.IsOwner)
+        {
+            throw HubException.Forbidden("Only the owner can start a session with the claude.ai connectors.");
+        }
+
         var role = req.Manager ? SessionRoles.Manager : SessionRoles.Worker;
+        // Defaults: the manager mostly routes messages, so a faster model does; workers write
+        // code, so they get the strongest one.
+        var launch = new ClaudeLaunch(
+            PermissionMode: req.PermissionMode ?? ClaudeCommand.DefaultPermissionMode,
+            Model: req.Model ?? (req.Manager ? "sonnet" : "opus"),
+            Effort: req.Effort ?? "medium",
+            Connectors: req.Connectors);
+        var mode = launch.PermissionMode;
+        var projectDir = WslPath.ToLinux(req.ProjectDir);
         ValidateAppearance(req.Icon, req.Color);
         // No icon given: guess one from the folder. It is only used if the session has none
         // stored yet, so restarting never replaces an icon the owner picked.
@@ -76,7 +90,7 @@ public sealed class SessionService(
             allowedTools.Add($"mcp__{ManagerServerName}");
         }
 
-        var command = ClaudeCommand.Build(mode,
+        var command = ClaudeCommand.Build(launch,
         [
             "--mcp-config", configPath,
             // Custom channels aren't on Anthropic's allowlist during the research preview, so
@@ -91,7 +105,8 @@ public sealed class SessionService(
         // Order matters: the database row first (status 'starting'), then tmux. If anything
         // fails, we close the window and mark the row stopped.
         await sessions.MarkStartingAsync(req.Id, projectDir, tmux.DisplayTarget(req.Id), role, Tokens.Hash(token),
-            icon: req.Icon, guessedIcon: guessedIcon, color: req.Color, ct: ct);
+            icon: req.Icon, guessedIcon: guessedIcon, color: req.Color,
+            model: launch.Model, effort: launch.Effort, connectors: launch.Connectors, ct: ct);
         // Prompts left over from a previous run of this id belong to a Claude Code that's gone.
         await permissions.ExpireForSessionAsync(req.Id, ct);
         IReadOnlyList<ClaudeDialog> answered;
@@ -116,7 +131,8 @@ public sealed class SessionService(
             throw;
         }
 
-        log.LogInformation("{Caller} started {Role} session {Id} in {Dir} ({Mode})", caller.Describe(), role, req.Id, projectDir, mode);
+        log.LogInformation("{Caller} started {Role} session {Id} in {Dir} ({Mode}, {Model}, effort {Effort}, connectors {Connectors})",
+            caller.Describe(), role, req.Id, projectDir, mode, launch.Model, launch.Effort, launch.Connectors);
         events.Publish("sessions", new { id = req.Id });
         return new StartSessionResponse(await GetInfoAsync(req.Id, ct), answered.Select(d => d.Name).ToList());
     }
@@ -295,7 +311,10 @@ public sealed class SessionService(
         IdleSeconds: window is null ? null : (int)(DateTimeOffset.UtcNow - window.LastActivity).TotalSeconds,
         Activity: window is { Dead: false } && row.Status != "stopped" ? activity.Get(row.Id) : null,
         Icon: row.Icon,
-        Color: row.Color);
+        Color: row.Color,
+        Model: row.Model,
+        Effort: row.Effort,
+        Connectors: row.Connectors);
 
     private async Task RequireRunningAsync(string id, CancellationToken ct)
     {

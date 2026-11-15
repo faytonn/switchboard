@@ -24,8 +24,10 @@ var tools = new McpServerPrimitiveCollection<McpServerTool>
          CancellationToken ct,
          // Default values make a parameter optional in the tool's JSON schema.
          [Description("Optional Claude Code permission mode: acceptEdits (default), plan, manual, auto, dontAsk or bypassPermissions.")] string? permission_mode = null,
-         [Description("Icon for the session's tile in the owner's UI: a Lucide name that fits the work, e.g. ticket (bookings), notebook-pen (notes), workflow (pipelines), database, server (APIs), globe (websites), chart-line (dashboards), bug (bug fixing), flask-conical (tests). list_icons shows all. Omit to let the hub guess from the folder.")] string? icon = null) =>
-            hub.StartAsync(id, project_dir, permission_mode, icon, ct),
+         [Description("Icon for the session's tile in the owner's UI: a Lucide name that fits the work, e.g. ticket (bookings), notebook-pen (notes), workflow (pipelines), database, server (APIs), globe (websites), chart-line (dashboards), bug (bug fixing), flask-conical (tests). list_icons shows all. Omit to let the hub guess from the folder.")] string? icon = null,
+         [Description("Optional model: opus (default for workers, best for real coding), sonnet (faster, fine for small or routine tasks) or haiku (fastest, for quick lookups).")] string? model = null,
+         [Description("Optional thinking effort: low, medium (default), high, xhigh or max. Higher is slower but more careful.")] string? effort = null) =>
+            hub.StartAsync(id, project_dir, permission_mode, icon, model, effort, ct),
         new() { Name = "start_session", Description = "Start a new Claude Code session for a project folder, in its own tmux window." }),
 
     McpServerTool.Create(

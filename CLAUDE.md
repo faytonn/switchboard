@@ -78,6 +78,18 @@ Claude Code channels, and every message is stored in Postgres.
   session that has messaged the caller.
 - MCP stdio servers must write logs to stderr only. stdout is the protocol.
 
+## Session launch options
+
+- Every session starts with `--model`, `--effort` and, unless `connectors` is on,
+  `--strict-mcp-config`. Defaults: manager `sonnet`/`medium` (it mostly routes), workers
+  `opus`/`medium`. Only the owner can turn on `connectors` (they reach Gmail, Notion, GitHub).
+- Benchmark (2026-11-15, send to reply saved, 3 messages): opus/medium 5.3/3.5/4.9s,
+  sonnet/medium 2.8/1.5/1.7s, haiku/low 5.6/2.8/2.8s. Hub delivery itself is 0.00-0.03s.
+  Connectors on/off made no measurable difference to replies, only to start time (5.1s vs 2.7s).
+- Sonnet and Haiku answered short messages in the terminal instead of calling `reply`, despite
+  the server instructions. The channel server therefore appends a one-line reminder to every
+  pushed message ("Answer with the reply tool, to=..."). Keep it.
+
 ## Permission relay
 
 - The channel server also declares `claude/channel/permission`. Claude Code then sends it

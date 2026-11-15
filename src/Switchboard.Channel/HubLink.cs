@@ -132,6 +132,13 @@ public sealed class HubLink(Uri hubUrl, string token, string sessionId, HttpClie
         }
     }
 
+    // A reminder right next to every message. The server instructions say the same, but in
+    // tests Sonnet and Haiku answered short messages like "hello" in the terminal anyway, where
+    // nobody sees them. Repeating it with each message fixed that. Only the session sees this
+    // line; Postgres and the UI keep the original text.
+    private static string WithReplyHint(HubFrame message) =>
+        $"{message.Text}\n\n(Answer with the reply tool, to=\"{message.From ?? "owner"}\". The sender can't see your terminal.)";
+
     private static Task PushAsync(McpServer server, HubFrame message, CancellationToken ct) =>
         // Claude Code shows this as <channel source="switchboard-channel" from="…" message_id="…">.
         // Meta keys must be letters, digits and underscores, or Claude Code drops them silently.
@@ -139,7 +146,7 @@ public sealed class HubLink(Uri hubUrl, string token, string sessionId, HttpClie
             "notifications/claude/channel",
             new
             {
-                content = message.Text ?? "",
+                content = WithReplyHint(message),
                 meta = new Dictionary<string, string>
                 {
                     ["from"] = message.From ?? "owner",
