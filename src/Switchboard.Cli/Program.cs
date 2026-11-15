@@ -1,5 +1,6 @@
 using System.Globalization;
 using Switchboard.Core;
+using Switchboard.Core.Claude;
 using Switchboard.Core.Tmux;
 
 // `sb` is a small command-line tool for driving sessions by hand. Phase 1 uses it to test
@@ -13,6 +14,7 @@ try
     {
         ["start", var id, var dir, .. var rest] => await Start(id, dir, rest),
         ["send", var id, .. var words] when words.Length > 0 => await Send(id, words),
+        ["trust", var id, .. var opts] => await Trust(id, opts),
         ["keys", var id, .. var keys] when keys.Length > 0 => await Keys(id, keys),
         ["read", var id, .. var opts] => await Read(id, opts),
         ["wait", var id, var text, .. var opts] => await Wait(id, text, opts),
@@ -29,12 +31,23 @@ catch (Exception e) when (e is TmuxException or ArgumentException)
 
 async Task<int> Start(string id, string dir, string[] rest)
 {
-    // Everything after "--" is passed to claude, e.g. `sb start demo ~/proj -- --model sonnet`.
-    var claudeArgs = rest is ["--", .. var after] ? after : rest;
+    // Options come first; everything after "--" is passed to claude,
+    // e.g. `sb start demo ~/proj --mode plan -- --model sonnet`.
+    var split = Array.IndexOf(rest, "--");
+    var opts = split < 0 ? rest : rest[..split];
+    string[] claudeArgs = split < 0 ? [] : rest[(split + 1)..];
+    var unknown = opts.Where((o, i) => o != "--mode" && (i == 0 || opts[i - 1] != "--mode")).ToList();
+    if (unknown.Count > 0)
+    {
+        throw new ArgumentException($"Unknown option '{unknown[0]}'. Put claude arguments after --.");
+    }
+
+    var mode = StringOption(opts, "--mode") ?? ClaudeCommand.DefaultPermissionMode;
     var projectDir = WslPath.ToLinux(dir);
 
-    await tmux.StartAsync(id, projectDir, ["claude", .. claudeArgs]);
-    Console.WriteLine($"Started '{id}' in {projectDir}");
+    await tmux.StartAsync(id, projectDir, ClaudeCommand.Build(mode, claudeArgs));
+    Console.WriteLine($"Started '{id}' in {projectDir} (permission mode: {mode})");
+    Console.WriteLine($"If the folder is new to Claude Code, answer the trust dialog with: sb trust {id}");
     Console.WriteLine($"Watch it live: tmux attach -t {tmux.SessionName}  (Ctrl-b w picks a window, Ctrl-b d detaches)");
     return 0;
 }
@@ -44,6 +57,16 @@ async Task<int> Send(string id, string[] words)
     // `sb send demo -` reads the message from stdin, which is handy for multi-line text.
     var text = words is ["-"] ? await Console.In.ReadToEndAsync() : string.Join(' ', words);
     await tmux.SendTextAsync(id, text.TrimEnd('\n'));
+    return 0;
+}
+
+async Task<int> Trust(string id, string[] opts)
+{
+    var timeout = TimeSpan.FromSeconds(IntOption(opts, "--timeout") ?? 30);
+    var result = await new DialogConfirmer(tmux).ConfirmAsync(id, ClaudeDialog.FolderTrust, timeout);
+    Console.WriteLine(result == ConfirmResult.Confirmed
+        ? "Trust dialog was on screen: chose \"Yes, I trust this folder\"."
+        : "No trust dialog: Claude Code is already at its prompt. Pressed nothing.");
     return 0;
 }
 
@@ -101,6 +124,17 @@ async Task<int> Stop(string id, string[] opts)
     return 0;
 }
 
+static string? StringOption(string[] opts, string name)
+{
+    var i = Array.IndexOf(opts, name);
+    if (i < 0)
+    {
+        return null;
+    }
+
+    return i + 1 < opts.Length ? opts[i + 1] : throw new ArgumentException($"{name} needs a value.");
+}
+
 static int? IntOption(string[] opts, string name)
 {
     var i = Array.IndexOf(opts, name);
@@ -126,10 +160,15 @@ static int Usage()
 {
     Console.Error.WriteLine("""
         Usage:
-          sb start <id> <project-dir> [-- <claude args>]   start Claude Code in a new tmux window
+          sb start <id> <project-dir> [--mode M] [-- <claude args>]
+                                                           start Claude Code in a new tmux window
+                                                           M: acceptEdits (default), auto, plan,
+                                                              manual, dontAsk, bypassPermissions
+          sb trust <id> [--timeout S]                      answer the folder trust dialog, only if it is on screen
           sb send  <id> <text...>                          type a message and press Enter
           sb send  <id> -                                  same, message read from stdin
-          sb keys  <id> <key...>                           press keys: Enter, Escape, Up, Down, C-c, y
+          sb keys  <id> <key...>                           press raw keys (careful: Up/Down at the prompt
+                                                           walk through message history)
           sb read  <id> [--lines N]                        print the screen (+ N lines of scrollback)
           sb wait  <id> <text> [--timeout S]               wait until text is on screen (default 30s)
           sb list                                          list sessions

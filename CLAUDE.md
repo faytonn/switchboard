@@ -23,11 +23,23 @@ Claude Code channels, and every message is stored in Postgres.
 - The .NET SDK in WSL is user-local: `~/.dotnet/dotnet` (set `DOTNET_ROOT=~/.dotnet`).
 - Postgres runs in Docker on port 5433. Port 5432 is taken by a native Windows Postgres 18.
 
+## Starting sessions
+
+- Always pass `--permission-mode` to claude (`ClaudeCommand.Build`), so sessions never inherit
+  the owner's own `defaultMode` from settings (it is `auto` in WSL). Default: `acceptEdits`.
+  `sb start --mode <mode>` overrides it.
+- Never press dialog keys blindly. At the normal prompt, Up/Down walk through message history
+  and Enter sends what came up (that is how a stray `Down Enter` once sent `/exit`). Use
+  `DialogConfirmer`: it waits until the dialog or the prompt is on screen, checks markers only
+  the dialog shows, moves to the option while checking after each key, and presses nothing if
+  Claude Code is already at its prompt. `sb trust <id>` does this for the folder trust dialog,
+  and the manager must use it instead of raw keys.
+
 ## Channels (research preview)
 
 - Custom channel servers need `claude --dangerously-load-development-channels server:<name>`.
-  This shows a warning dialog on every launch. Before auto-confirming it through tmux,
-  capture the pane and check that the warning text is actually on screen.
+  This shows a warning dialog on every launch. Answer it with `DialogConfirmer` and a
+  `ClaudeDialog` for the warning, never with raw keys.
 - Set `MCP_PROTOCOL_NEGOTIATION=legacy` for the channel server, or Claude Code may not register it
   as a channel.
 - MCP stdio servers must write logs to stderr only. stdout is the protocol.
