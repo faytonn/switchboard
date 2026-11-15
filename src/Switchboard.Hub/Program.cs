@@ -119,7 +119,26 @@ app.MapOwnerLogin(options);
 
 var api = app.MapGroup("/api").AddEndpointFilter<AgentAuthFilter>();
 
-api.MapGet("/whoami", (HttpContext ctx) => Caller.From(ctx));
+// Who you are, plus how the hub sees the request. "https" decides the cookie's Secure flag
+// (CookieSecurePolicy.SameAsRequest), and "client" is what the login rate limit counts by.
+// Behind `tailscale serve` both depend on the forwarded headers being trusted.
+api.MapGet("/whoami", (HttpContext ctx) =>
+{
+    var caller = Caller.From(ctx);
+    return new
+    {
+        caller.SessionId,
+        caller.Role,
+        caller.IsOwner,
+        request = new
+        {
+            scheme = ctx.Request.Scheme,
+            https = ctx.Request.IsHttps,
+            host = ctx.Request.Host.Value,
+            client = ctx.Connection.RemoteIpAddress?.ToString(),
+        },
+    };
+});
 
 api.MapGet("/sessions", (HttpContext ctx, SessionService svc) =>
     svc.ListAsync(Caller.From(ctx), ctx.RequestAborted));
