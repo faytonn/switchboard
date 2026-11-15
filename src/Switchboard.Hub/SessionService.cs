@@ -22,6 +22,7 @@ public sealed class SessionService(
     ChannelHub channels,
     HubEvents events,
     PermissionService permissions,
+    ActivityMonitor activity,
     ILogger<SessionService> log)
 {
     // MCP server names inside a session. Claude Code names their tools after them, e.g.
@@ -177,7 +178,15 @@ public sealed class SessionService(
     {
         RequireControl(caller);
         var windows = (await tmux.ListAsync(ct)).ToDictionary(w => w.Id);
-        return (await sessions.ListAsync(ct)).Select(row => ToInfo(row, windows.GetValueOrDefault(row.Id))).ToList();
+        var latest = await messages.LatestPerSessionAsync(ct);
+        return (await sessions.ListAsync(ct))
+            .Select(row => ToInfo(row, windows.GetValueOrDefault(row.Id)) with
+            {
+                LastMessage = latest.TryGetValue(row.Id, out var m)
+                    ? new MessagePreview(m.From, m.To, m.Body.Length > 160 ? m.Body[..160] + "…" : m.Body, m.CreatedAt)
+                    : null,
+            })
+            .ToList();
     }
 
     public async Task<IReadOnlyList<Message>> HistoryAsync(Caller caller, string id, int limit, CancellationToken ct)
@@ -243,7 +252,8 @@ public sealed class SessionService(
         Channel: channels.IsConnected(row.Id),
         row.ProjectDir,
         row.StartedAt,
-        IdleSeconds: window is null ? null : (int)(DateTimeOffset.UtcNow - window.LastActivity).TotalSeconds);
+        IdleSeconds: window is null ? null : (int)(DateTimeOffset.UtcNow - window.LastActivity).TotalSeconds,
+        Activity: window is { Dead: false } && row.Status != "stopped" ? activity.Get(row.Id) : null);
 
     private async Task RequireRunningAsync(string id, CancellationToken ct)
     {

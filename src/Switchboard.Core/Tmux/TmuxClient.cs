@@ -106,9 +106,14 @@ public sealed class TmuxClient(string sessionName)
     /// Returns what the window shows: the visible screen plus up to
     /// <paramref name="scrollback"/> lines of history above it.
     /// </summary>
-    public async Task<string> ReadAsync(string id, int scrollback = 0, CancellationToken ct = default)
+    /// <param name="check">false skips the "does this window exist" lookup (two extra tmux
+    /// calls), for callers that just listed the windows, like the hub's activity monitor.</param>
+    public async Task<string> ReadAsync(string id, int scrollback = 0, CancellationToken ct = default, bool check = true)
     {
-        await RequireAsync(id, ct);
+        if (check)
+        {
+            await RequireAsync(id, ct);
+        }
         // -p prints to stdout. -J joins lines that tmux wrapped because the window was narrow.
         var args = new List<string> { "capture-pane", "-p", "-J", "-t", Target(id) };
         if (scrollback > 0)

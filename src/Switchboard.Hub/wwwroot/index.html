@@ -5,7 +5,8 @@
   <!-- viewport-fit=cover lets the layout use the whole phone screen; the CSS keeps content
        clear of the notch and home bar with env(safe-area-inset-*). -->
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#111318">
+  <meta name="theme-color" content="#f7f7f8" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0c0d10" media="(prefers-color-scheme: dark)">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <title>Switchboard</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
@@ -16,40 +17,55 @@
 <body>
   <div class="app">
     <aside class="sidebar">
-      <header class="bar">
+      <header class="side-head">
+        <img src="/icon.svg" alt="" class="logo" width="28" height="28">
         <h1>Switchboard</h1>
         <span id="conn" class="conn" title="Live updates: connecting"></span>
-        <button id="new-btn" class="icon-btn" type="button" aria-label="Start a session" title="Start a session">+</button>
+        <button id="new-btn" class="icon-btn" type="button" aria-label="Start a session" title="Start a session">
+          <span aria-hidden="true">+</span>
+        </button>
       </header>
       <nav id="session-list" class="sessions" aria-label="Sessions"></nav>
       <footer class="side-foot">
         <label class="check"><input type="checkbox" id="show-stopped"> Show stopped</label>
-        <button id="logout" class="link" type="button">Sign out</button>
+        <button id="logout" class="text-btn" type="button">Sign out</button>
       </footer>
     </aside>
 
     <main class="chat">
       <div id="placeholder" class="placeholder">
+        <img src="/icon.svg" alt="" width="56" height="56">
         <p>Pick a session, or start one with <strong>+</strong>.</p>
       </div>
 
-      <header id="chat-bar" class="bar chat-bar" hidden>
-        <a href="#" class="icon-btn back" aria-label="Back to sessions">‹</a>
-        <div class="title">
-          <span id="chat-dot" class="dot"></span>
-          <div>
-            <div id="chat-title" class="chat-title"></div>
-            <div id="chat-sub" class="chat-sub"></div>
+      <header id="chat-bar" class="chat-bar" hidden>
+        <a href="#" class="icon-btn back" aria-label="Back to sessions"><span aria-hidden="true">‹</span></a>
+        <span id="chat-avatar"></span>
+        <div class="chat-heading">
+          <div class="chat-title-row">
+            <span id="chat-title" class="chat-title"></span>
+            <span id="chat-role" class="tag" hidden>manager</span>
           </div>
+          <div id="chat-sub" class="chat-sub"></div>
         </div>
-        <button id="term-btn" class="ghost" type="button" aria-pressed="false">Terminal</button>
-        <button id="stop-btn" class="ghost danger" type="button">Stop</button>
+        <button id="chat-approval" class="chip warn" type="button" hidden>Waiting for approval</button>
+        <div class="chat-actions">
+          <!-- Icons always; the text labels hide on phones to leave room for the name. -->
+          <button id="term-btn" class="ghost icon-label" type="button" aria-pressed="false" aria-label="Terminal" title="Show the terminal">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M5 7l5 5-5 5M12 17h7" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span class="label">Terminal</span>
+          </button>
+          <button id="stop-btn" class="ghost danger icon-label" type="button" aria-label="Stop" title="Stop this session">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><rect x="6.5" y="6.5" width="11" height="11" rx="2" fill="currentColor"/></svg>
+            <span class="label">Stop</span>
+          </button>
+        </div>
       </header>
 
       <section id="terminal" class="terminal" hidden aria-label="Terminal screen">
         <div class="term-head">
-          <span>What the terminal shows now</span>
-          <button id="term-refresh" class="link" type="button">Refresh</button>
+          <span>Terminal, as it looks right now</span>
+          <button id="term-refresh" class="text-btn" type="button">Refresh</button>
         </div>
         <pre id="term-screen"></pre>
       </section>
@@ -61,7 +77,9 @@
 
       <form id="composer" class="composer" hidden>
         <textarea id="input" rows="1" placeholder="Message" autocomplete="off" enterkeyhint="send" aria-label="Message"></textarea>
-        <button type="submit" id="send">Send</button>
+        <button type="submit" id="send" class="send" aria-label="Send">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 12l16-8-6 16-2.5-6.5L4 12z" fill="currentColor"/></svg>
+        </button>
       </form>
     </main>
   </div>
@@ -78,17 +96,17 @@
       </label>
       <label>Permission mode
         <select name="permissionMode">
-          <option value="acceptEdits" selected>acceptEdits: edits files, asks before commands</option>
-          <option value="plan">plan: plans only, changes nothing</option>
-          <option value="manual">manual: asks before everything</option>
-          <option value="auto">auto: a classifier decides</option>
+          <option value="acceptEdits" selected>acceptEdits · asks before commands</option>
+          <option value="plan">plan · changes nothing</option>
+          <option value="manual">manual · asks before everything</option>
+          <option value="auto">auto · a classifier decides</option>
         </select>
       </label>
       <label class="check"><input type="checkbox" name="manager"> Manager (can start and control other sessions)</label>
       <p id="start-status" class="form-status" role="status"></p>
       <div class="actions">
         <button type="button" class="ghost" id="start-cancel">Cancel</button>
-        <button type="submit" id="start-submit">Start</button>
+        <button type="submit" id="start-submit" class="primary">Start</button>
       </div>
     </form>
   </dialog>

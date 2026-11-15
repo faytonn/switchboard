@@ -60,6 +60,36 @@ public sealed class MessageStore(NpgsqlDataSource db)
         return await ReadAsync(cmd, ct);
     }
 
+    /// <summary>The newest message each session sent or received, for previews in the list.</summary>
+    public async Task<IReadOnlyDictionary<string, Message>> LatestPerSessionAsync(CancellationToken ct = default)
+    {
+        // Each message counts for both its sender and its recipient, so list it once per side,
+        // then DISTINCT ON keeps the newest row per session (the first after ORDER BY ... id desc).
+        await using var cmd = db.CreateCommand($"""
+            select distinct on (sid) sid, {Columns}
+            from (
+                select from_session as sid, * from messages where from_session is not null
+                union all
+                select to_session as sid, * from messages where to_session is not null
+            ) m
+            order by sid, id desc
+            """);
+        var latest = new Dictionary<string, Message>();
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            latest[reader.GetString(0)] = new Message(
+                Id: reader.GetInt64(1),
+                From: reader.IsDBNull(2) ? null : reader.GetString(2),
+                To: reader.IsDBNull(3) ? null : reader.GetString(3),
+                Body: reader.GetString(4),
+                CreatedAt: reader.GetFieldValue<DateTimeOffset>(5),
+                DeliveredAt: reader.IsDBNull(6) ? null : reader.GetFieldValue<DateTimeOffset>(6));
+        }
+
+        return latest;
+    }
+
     /// <summary>Has <paramref name="from"/> ever sent a message to <paramref name="to"/>?</summary>
     public async Task<bool> HasMessagedAsync(string from, string to, CancellationToken ct = default)
     {

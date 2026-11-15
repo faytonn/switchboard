@@ -15,6 +15,8 @@ public sealed record ReplyRequest(string To, string Text);
 /// <param name="Status">From Postgres: starting, running or stopped.</param>
 /// <param name="Window">From tmux: running, exited (Claude Code quit, window kept) or missing.</param>
 /// <param name="Channel">True while the session's channel server is connected to the hub.</param>
+/// <param name="Activity">From the screen: idle, working or approval; null if not running.</param>
+/// <param name="LastMessage">The newest message to or from the session, for the list preview.</param>
 public sealed record SessionInfo(
     string Id,
     string Role,
@@ -24,7 +26,11 @@ public sealed record SessionInfo(
     bool Channel,
     string ProjectDir,
     DateTimeOffset StartedAt,
-    int? IdleSeconds);
+    int? IdleSeconds,
+    string? Activity = null,
+    MessagePreview? LastMessage = null);
+
+public sealed record MessagePreview(string? From, string? To, string Body, DateTimeOffset CreatedAt);
 
 /// <param name="Dialogs">The startup dialogs we answered, e.g. ["folder trust", "development channels warning"].</param>
 public sealed record StartSessionResponse(SessionInfo Session, IReadOnlyList<string> Dialogs);

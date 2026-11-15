@@ -75,6 +75,26 @@ public static class ClaudeScreen
 
     public static bool HasInputPrompt(string screen) => HasInputPrompt(Lines(screen));
 
+    /// <summary>
+    /// What the session is doing, read from its screen: "approval" (a tool prompt is open,
+    /// e.g. "Do you want to proceed?"), "working" (Claude Code's footer says "esc to interrupt"
+    /// while it runs), or "idle". Only the bottom lines are checked, so the same words in
+    /// earlier chat output don't count.
+    /// </summary>
+    public static string Activity(string screen)
+    {
+        var lines = Lines(screen);
+        var bottom = lines.Where(l => l.Trim().Length > 0).TakeLast(12).ToList();
+        if (!HasInputPrompt(lines)
+            && bottom.Any(l => l.Contains("Do you want to", StringComparison.Ordinal))
+            && bottom.Any(l => l.Contains("Esc to cancel", StringComparison.Ordinal)))
+        {
+            return "approval";
+        }
+
+        return bottom.TakeLast(3).Any(l => l.Contains("esc to interrupt", StringComparison.Ordinal)) ? "working" : "idle";
+    }
+
     // Claude Code's input box is a "❯" line with a horizontal rule (────) right above and
     // right below. Dialog menus also use "❯" for the selected option, but without rules
     // around it.

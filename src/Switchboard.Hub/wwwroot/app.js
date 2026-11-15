@@ -3,7 +3,7 @@
 // Security rule for this file: text from sessions is only ever put on the page with
 // textContent, never innerHTML. A session could send "<img onerror=...>", and textContent
 // shows it as plain characters instead of running it. The CSP header is the second line of
-// defence.
+// defence (and it's why colours are set with classes, not style attributes).
 
 const $ = (id) => document.getElementById(id);
 
@@ -16,12 +16,15 @@ function el(tag, className, text) {
 
 const state = {
   sessions: [],
-  current: null,        // id of the open session
-  messages: [],         // history of the open session, oldest first
-  unread: new Map(),    // session id -> replies to you not seen yet
-  permissions: [],      // tool prompts waiting for you, all sessions
+  current: null,          // id of the open session
+  messages: [],           // history of the open session, oldest first
+  unread: new Map(),      // session id -> replies to you not seen yet
+  permissions: [],        // tool prompts waiting for you, all sessions
+  activity: new Map(),    // session id -> idle | working | approval (pushed by the hub)
+  expanded: new Set(),    // ids of agent-to-agent lines the user opened
   showStopped: false,
   terminalTimer: null,
+  focusApprovals: false,  // scroll to the approval cards once the chat opens
 };
 
 // ---------- API ----------
@@ -46,21 +49,63 @@ async function api(path, { method = 'GET', body } = {}) {
   return data;
 }
 
-// ---------- sessions ----------
+// ---------- session colours and avatars ----------
 
+// The same id always gets the same colour: a small string hash picks one of 8 palette
+// classes (.c0 ... .c7), whose colours are tuned for light and dark mode in app.css.
+function colorClass(id) {
+  let hash = 2166136261;
+  for (const ch of id) hash = Math.imul(hash ^ ch.codePointAt(0), 16777619);
+  return `c${(hash >>> 0) % 8}`;
+}
+
+// "api-fix" -> "AF", "manager" -> "M".
+function initials(id) {
+  const parts = id.split('-').filter(Boolean);
+  return (parts.length > 1 ? parts[0][0] + parts[1][0] : id[0]).toUpperCase();
+}
+
+function avatar(id, size = '') {
+  const node = el('span', `avatar ${size} ${colorClass(id)}`, initials(id));
+  node.setAttribute('aria-hidden', 'true');
+  return node;
+}
+
+// ---------- session state ----------
+
+function sessionById(id) {
+  return state.sessions.find((s) => s.id === id);
+}
+
+function waitingCount(id) {
+  return state.permissions.filter((p) => p.sessionId === id).length;
+}
+
+// One answer to "what is this session doing?", used by the list, the header and the chat.
 function statusOf(s) {
-  if (s.status === 'stopped') return { cls: 'off', text: 'stopped' };
-  if (s.window === 'exited') return { cls: 'bad', text: `exited (${s.exitStatus ?? '?'})` };
-  if (s.window === 'missing') return { cls: 'bad', text: 'window missing' };
-  if (s.status === 'starting') return { cls: 'busy', text: 'starting' };
-  return s.channel ? { cls: 'live', text: 'live' } : { cls: 'warn', text: 'no channel' };
+  if (!s) return { key: 'off', text: 'unknown' };
+  if (s.status === 'stopped') return { key: 'off', text: 'stopped' };
+  if (s.window === 'exited') return { key: 'bad', text: `exited (${s.exitStatus ?? '?'})` };
+  if (s.window === 'missing') return { key: 'bad', text: 'window missing' };
+  if (s.status === 'starting') return { key: 'working', text: 'starting' };
+  const activity = state.activity.get(s.id) ?? s.activity;
+  if (activity === 'approval' || waitingCount(s.id) > 0) return { key: 'waiting', text: 'waiting for approval' };
+  if (!s.channel) return { key: 'bad', text: 'no channel' };
+  if (activity === 'working') return { key: 'working', text: 'working' };
+  return { key: 'live', text: 'idle' };
 }
 
 async function loadSessions() {
   state.sessions = await api('/api/sessions');
+  for (const s of state.sessions) {
+    if (s.activity) state.activity.set(s.id, s.activity);
+    else state.activity.delete(s.id);
+  }
   renderSessions();
   renderChatHeader();
 }
+
+// ---------- session list ----------
 
 function renderSessions() {
   const list = $('session-list');
@@ -70,32 +115,49 @@ function renderSessions() {
     list.append(el('p', 'empty', 'No sessions running. Start one with +.'));
     return;
   }
-  for (const s of visible) {
-    const status = statusOf(s);
-    const link = el('a', 'session');
-    link.href = `#/s/${encodeURIComponent(s.id)}`;
-    if (s.id === state.current) link.classList.add('active');
+  for (const s of visible) list.append(sessionRow(s));
+}
 
-    const dot = el('span', `dot ${status.cls}`);
-    dot.title = status.text;
-    const name = el('span', 'name', s.id);
-    const meta = el('span', 'meta');
-    if (s.role === 'manager') meta.append(el('span', 'role', 'manager'), ' · ');
-    meta.append(status.text, ' · ', s.projectDir);
+function sessionRow(s) {
+  const status = statusOf(s);
+  const link = el('a', 'session');
+  link.href = `#/s/${encodeURIComponent(s.id)}`;
+  if (s.id === state.current) link.classList.add('active');
+  if (s.status === 'stopped') link.classList.add('stopped');
 
-    link.append(dot, name);
-    // A waiting tool prompt matters more than unread replies: the session is blocked on you.
-    const waiting = state.permissions.filter((p) => p.sessionId === s.id).length;
-    const unread = state.unread.get(s.id) ?? 0;
-    if (waiting > 0) {
-      const badge = el('span', 'badge warn', `${waiting} to approve`);
-      link.append(badge);
-    } else {
-      link.append(unread > 0 ? el('span', 'badge', String(unread)) : el('span'));
-    }
-    link.append(meta);
-    list.append(link);
+  const wrap = el('span', 'avatar-wrap');
+  wrap.append(avatar(s.id), el('span', `presence ${status.key}`));
+  wrap.title = status.text;
+
+  const main = el('div', 'row-main');
+  const top = el('div', 'row-top');
+  top.append(el('span', 'name', s.id));
+  if (s.role === 'manager') top.append(el('span', 'tag', 'manager'));
+  if (s.lastMessage) top.append(el('span', 'row-time', relativeTime(s.lastMessage.createdAt, true)));
+
+  const bottom = el('div', 'row-bottom');
+  bottom.append(previewEl(s, status));
+  const unread = state.unread.get(s.id) ?? 0;
+  if (unread > 0 && status.key !== 'waiting') bottom.append(el('span', 'count', String(unread)));
+
+  main.append(top, bottom);
+  link.append(wrap, main);
+  // Tapping a row that waits for approval opens the chat scrolled to the Allow/Deny card.
+  link.addEventListener('click', () => { state.focusApprovals = status.key === 'waiting'; });
+  return link;
+}
+
+function previewEl(s, status) {
+  if (status.key === 'waiting') return el('span', 'preview waiting', 'Waiting for approval');
+  if (status.key === 'working') {
+    const node = el('span', 'preview working dots', 'working');
+    return node;
   }
+  if (status.key === 'off' || status.key === 'bad') return el('span', 'preview', status.text);
+  const m = s.lastMessage;
+  if (!m) return el('span', 'preview', `${s.projectDir}`);
+  const who = m.from === null ? 'You: ' : m.from === s.id ? '' : `${m.from}: `;
+  return el('span', 'preview', who + m.body.replace(/\s+/g, ' '));
 }
 
 // ---------- chat ----------
@@ -103,6 +165,7 @@ function renderSessions() {
 async function openSession(id) {
   state.current = id;
   state.unread.delete(id);
+  state.expanded.clear();
   document.body.classList.add('in-chat');
   $('placeholder').hidden = true;
   $('chat-bar').hidden = false;
@@ -115,12 +178,17 @@ async function openSession(id) {
   $('messages').replaceChildren(el('p', 'empty', 'Loading…'));
   try {
     state.messages = await api(`/api/sessions/${encodeURIComponent(id)}/messages?limit=200`);
-    if (state.current === id) renderMessages();
+    if (state.current === id) renderMessages(true);
   } catch (e) {
     toast(e.message);
   }
-  // On a phone the keyboard would cover half the chat, so only focus on wide screens.
-  if (matchMedia('(min-width: 800px)').matches) $('input').focus();
+  if (state.focusApprovals) {
+    state.focusApprovals = false;
+    focusApproval();
+  } else if (matchMedia('(min-width: 800px)').matches) {
+    // On a phone the keyboard would cover half the chat, so only focus on wide screens.
+    $('input').focus();
+  }
 }
 
 function closeSession() {
@@ -136,81 +204,176 @@ function closeSession() {
 }
 
 function renderChatHeader() {
-  const s = state.sessions.find((x) => x.id === state.current);
+  const s = sessionById(state.current);
   if (!s) return;
   const status = statusOf(s);
-  $('chat-dot').className = `dot ${status.cls}`;
+  const wrap = el('span', 'avatar-wrap');
+  wrap.append(avatar(s.id, 'md'), el('span', `presence ${status.key}`));
+  $('chat-avatar').replaceChildren(wrap);
   $('chat-title').textContent = s.id;
-  $('chat-sub').textContent = `${s.role === 'manager' ? 'manager · ' : ''}${status.text} · ${s.projectDir}`;
+  $('chat-role').hidden = s.role !== 'manager';
+
+  const sub = $('chat-sub');
+  sub.replaceChildren();
+  if (status.key === 'working') sub.append(el('span', 'working dots', 'working'));
+  else if (status.key !== 'waiting') sub.append(status.text);
+  if (status.key !== 'waiting') sub.append(' · ');
+  sub.append(s.projectDir);
+
+  // A clear, clickable "waiting for approval" chip: jumps to the Allow/Deny card, or opens the
+  // terminal if the prompt wasn't relayed (sessions started before the relay existed).
+  $('chat-approval').hidden = status.key !== 'waiting';
+
   const running = s.status !== 'stopped';
   $('stop-btn').hidden = !running;
   $('input').disabled = !running;
   $('send').disabled = !running;
   $('input').placeholder = running ? `Message ${s.id}` : 'This session is stopped';
+  renderTyping();
 }
 
-function renderMessages() {
+// Messages in the chat with session X:
+//   out      you -> X                         right, accent bubble
+//   in       X -> you                         left, with X's avatar and colour
+//   activity X <-> another session (manager)  one muted line, tap to expand
+function kindOf(m) {
+  if (m.from === null) return 'out';
+  if (m.to === null) return 'in';
+  return 'activity';
+}
+
+// Re-renders the whole chat (at most 200 messages, so it's cheap). Stays at the bottom if
+// you were there; otherwise keeps your place while you scroll back through history.
+function renderMessages(toBottom = false) {
   const box = $('messages');
+  const nearBottom = toBottom || box.scrollHeight - box.scrollTop - box.clientHeight < 140;
   box.replaceChildren();
   if (state.messages.length === 0) {
     box.append(el('p', 'empty', 'No messages yet. Say hello.'));
+    renderTyping();
     return;
   }
   let lastDay = '';
-  for (const m of state.messages) {
+  state.messages.forEach((m, i) => {
     const day = new Date(m.createdAt).toDateString();
     if (day !== lastDay) {
       box.append(el('div', 'day', dayLabel(m.createdAt)));
       lastDay = day;
     }
-    box.append(messageEl(m));
-  }
-  box.scrollTop = box.scrollHeight;
+    const prev = state.messages[i - 1];
+    const next = state.messages[i + 1];
+    box.append(kindOf(m) === 'activity' ? activityEl(m) : messageEl(m, !sameGroup(prev, m), !sameGroup(m, next)));
+  });
+  renderTyping();
+  if (nearBottom) box.scrollTop = box.scrollHeight;
 }
 
-// In the chat with session X:
-//   out  = you -> X       (right, blue)
-//   in   = X -> you       (left)
-//   side = X <-> another session, e.g. the manager (centred, dashed)
-function messageEl(m) {
-  const kind = m.from === null ? 'out' : m.to === null ? 'in' : 'side';
-  const wrap = el('div', `msg ${kind}`);
-  wrap.dataset.id = String(m.id);
-  if (kind === 'side') wrap.append(el('div', 'who', `${m.from} → ${m.to}`));
-  wrap.append(el('div', 'body', m.body));
-  const meta = el('div', 'meta', timeLabel(m.createdAt));
-  if (kind !== 'in') {
-    meta.append(' · ');
-    meta.append(m.deliveredAt ? el('span', 'tick', 'delivered') : el('span', 'queued', 'queued'));
+// Bubbles from the same sender within 5 minutes form a group: one avatar, one timestamp.
+function sameGroup(a, b) {
+  if (!a || !b || kindOf(a) !== kindOf(b) || kindOf(a) === 'activity') return false;
+  if (a.from !== b.from) return false;
+  if (new Date(a.createdAt).toDateString() !== new Date(b.createdAt).toDateString()) return false;
+  return new Date(b.createdAt) - new Date(a.createdAt) < 5 * 60_000;
+}
+
+function messageEl(m, first, last) {
+  const kind = kindOf(m);
+  const row = el('div', `msg ${kind}`);
+  row.dataset.id = String(m.id);
+  if (first) row.classList.add('first');
+  if (last) row.classList.add('last');
+
+  if (kind === 'in') {
+    row.classList.add(colorClass(m.from));
+    const slot = el('span', 'avatar-slot');
+    if (last) slot.append(avatar(m.from, 'sm'));
+    row.append(slot);
   }
-  wrap.append(meta);
-  return wrap;
+
+  // No sender name: in a session's chat, every "in" bubble is from that session, and its
+  // avatar and colour already say so.
+  const col = el('div', 'bubble-col');
+  col.append(el('div', 'bubble', m.body));
+  if (last) {
+    const meta = el('div', 'meta');
+    meta.append(timeEl(m.createdAt));
+    if (kind === 'out') {
+      meta.append(' · ');
+      meta.append(m.deliveredAt ? el('span', 'tick', 'delivered') : el('span', 'queued', 'queued'));
+    }
+    col.append(meta);
+  }
+  row.append(col);
+  return row;
+}
+
+// Agent-to-agent message: a <details> element, so expanding works without any JavaScript.
+function activityEl(m) {
+  const details = el('details', `activity ${colorClass(m.from)}`);
+  details.dataset.id = String(m.id);
+  if (state.expanded.has(m.id)) details.open = true;
+  details.addEventListener('toggle', () => {
+    if (details.open) state.expanded.add(m.id);
+    else state.expanded.delete(m.id);
+  });
+
+  const summary = el('summary');
+  const route = el('span', 'route');
+  route.append(m.from, el('span', 'arrow', '→'), m.to);
+  const gist = el('span', 'gist', m.body.replace(/\s+/g, ' '));
+  const when = timeEl(m.createdAt, 'when');
+  summary.append(avatar(m.from, 'xs'), route, gist, when);
+  if (!m.deliveredAt) summary.append(el('span', 'queued', 'queued'));
+
+  details.append(summary, el('div', 'full', m.body));
+  return details;
+}
+
+// While the session works, a "typing" bubble sits at the end of the chat.
+function renderTyping() {
+  const box = $('messages');
+  box.querySelector('.typing')?.remove();
+  const s = sessionById(state.current);
+  if (!s || statusOf(s).key !== 'working') return;
+  const row = el('div', `typing ${colorClass(s.id)}`);
+  const bubble = el('div', 'bubble');
+  bubble.append(el('span'), el('span'), el('span'));
+  bubble.setAttribute('aria-label', `${s.id} is working`);
+  row.append(avatar(s.id, 'sm'), bubble);
+  box.append(row);
+  const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 200;
+  if (nearBottom) box.scrollTop = box.scrollHeight;
 }
 
 function onMessageEvent(m) {
   const involves = (id) => m.from === id || m.to === id;
-  if (state.current && involves(state.current)) {
-    if (state.messages.some((x) => x.id === m.id)) return; // already shown
-    const box = $('messages');
-    const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
-    if (state.messages.length === 0) box.replaceChildren();
+  if (state.current && involves(state.current) && !state.messages.some((x) => x.id === m.id)) {
     state.messages.push(m);
-    box.append(messageEl(m));
-    if (nearBottom || m.from === null) box.scrollTop = box.scrollHeight;
+    renderMessages(m.from === null); // your own message: always jump to it
   }
   // Count replies to you from sessions you aren't looking at.
   if (m.to === null && m.from && m.from !== state.current) {
     state.unread.set(m.from, (state.unread.get(m.from) ?? 0) + 1);
-    renderSessions();
   }
+  // Keep the list preview current without reloading everything.
+  for (const id of [m.from, m.to]) {
+    const s = id && sessionById(id);
+    if (s) s.lastMessage = { from: m.from, to: m.to, body: m.body, createdAt: m.createdAt };
+  }
+  renderSessions();
 }
 
 function onDeliveredEvent({ id }) {
   const m = state.messages.find((x) => x.id === id);
   if (!m) return;
   m.deliveredAt = new Date().toISOString();
-  const node = document.querySelector(`.msg[data-id="${id}"] .queued`);
-  if (node) node.replaceWith(el('span', 'tick', 'delivered'));
+  renderMessages();
+}
+
+function onActivityEvent({ id, activity }) {
+  state.activity.set(id, activity);
+  renderSessions();
+  if (id === state.current) renderChatHeader();
 }
 
 async function sendMessage(e) {
@@ -276,6 +439,7 @@ async function loadPermissions() {
   state.permissions = await api('/api/permissions');
   renderApprovals();
   renderSessions();
+  renderChatHeader();
   updateTitle();
 }
 
@@ -286,17 +450,29 @@ function renderApprovals() {
   box.replaceChildren(...mine.map(approvalEl));
 }
 
+// The "waiting for approval" chip: go to the card, or to the terminal if there's no card
+// (a session whose channel server predates the relay only shows the prompt on screen).
+function focusApproval() {
+  const card = $('approvals').querySelector('.approval');
+  if (card) {
+    card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    card.querySelector('.allow')?.focus({ preventScroll: true });
+  } else if ($('terminal').hidden) {
+    toggleTerminal();
+  }
+}
+
 function approvalEl(p) {
   const card = el('div', 'approval');
   const head = el('div', 'approval-head');
-  head.append(el('span', 'tool', p.toolName), el('span', null, 'wants your approval'), el('span', 'when', timeLabel(p.createdAt)));
+  head.append(el('span', 'tool', p.toolName), el('span', null, 'wants your approval'), timeEl(p.createdAt, 'when'));
   card.append(head);
   if (p.description) card.append(el('div', 'approval-desc', p.description));
   // What the tool will do. Read it before allowing.
   card.append(el('pre', null, previewText(p.inputPreview)));
 
   const actions = el('div', 'approval-actions');
-  const dismiss = el('button', 'link', 'Dismiss');
+  const dismiss = el('button', 'text-btn', 'Dismiss');
   dismiss.type = 'button';
   dismiss.title = 'Hide this without answering (for example, if you answered in the terminal)';
   const deny = el('button', 'deny', 'Deny');
@@ -344,6 +520,7 @@ function onPermissionEvent(p) {
   state.permissions.push(p);
   renderApprovals();
   renderSessions();
+  renderChatHeader();
   updateTitle();
   if (p.sessionId !== state.current) toast(`${p.sessionId} wants to use ${p.toolName}. Open it to approve.`);
   navigator.vibrate?.(200); // a buzz on Android phones; ignored elsewhere
@@ -351,21 +528,16 @@ function onPermissionEvent(p) {
 
 function onPermissionDecidedEvent({ sessionId, requestId }) {
   // requestId null = all of that session's prompts expired (it stopped or restarted).
-  if (requestId === null) {
-    state.permissions = state.permissions.filter((x) => x.sessionId !== sessionId);
-    renderApprovals();
-    renderSessions();
-    updateTitle();
-  } else {
-    removePermission(sessionId, requestId);
-  }
+  state.permissions = state.permissions.filter((x) =>
+    !(x.sessionId === sessionId && (requestId === null || x.requestId === requestId)));
+  renderApprovals();
+  renderSessions();
+  renderChatHeader();
+  updateTitle();
 }
 
 function removePermission(sessionId, requestId) {
-  state.permissions = state.permissions.filter((x) => !(x.sessionId === sessionId && x.requestId === requestId));
-  renderApprovals();
-  renderSessions();
-  updateTitle();
+  onPermissionDecidedEvent({ sessionId, requestId });
 }
 
 // "(2) Switchboard" in the tab title, so a waiting prompt shows even in another tab.
@@ -375,8 +547,8 @@ function updateTitle() {
 }
 
 // ---------- terminal peek ----------
-// Shows the session's tmux screen as text: the way to see a permission prompt or a dialog
-// the session is stuck on, which never shows up as a message.
+// Shows the session's tmux screen as text: the way to see a prompt or a dialog the session is
+// stuck on that never shows up as a message.
 
 async function refreshTerminal() {
   if (!state.current) return;
@@ -464,6 +636,7 @@ function connectEvents() {
   events.addEventListener('message', (e) => onMessageEvent(JSON.parse(e.data)));
   events.addEventListener('delivered', (e) => onDeliveredEvent(JSON.parse(e.data)));
   events.addEventListener('sessions', () => loadSessions().catch(() => {}));
+  events.addEventListener('activity', (e) => onActivityEvent(JSON.parse(e.data)));
   events.addEventListener('permission', (e) => onPermissionEvent(JSON.parse(e.data)));
   events.addEventListener('permission-decided', (e) => onPermissionDecidedEvent(JSON.parse(e.data)));
   events.onerror = () => {
@@ -507,6 +680,44 @@ function route() {
   }
 }
 
+// ---------- time ----------
+
+// Soft timestamps: "now", "5 min", "14:05"; older days show the weekday or date.
+// The exact time is in the tooltip. Labels are refreshed every minute.
+function relativeTime(iso, short = false) {
+  const date = new Date(iso);
+  const minutes = Math.floor((Date.now() - date) / 60_000);
+  if (minutes < 1) return 'now';
+  if (minutes < 60) return short ? `${minutes}m` : `${minutes} min`;
+  const time = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  if (date.toDateString() === new Date().toDateString()) return time;
+  if (Date.now() - date < 6 * 86_400_000) {
+    const day = date.toLocaleDateString([], { weekday: 'short' });
+    return short ? day : `${day} ${time}`;
+  }
+  return date.toLocaleDateString([], { day: 'numeric', month: 'short' });
+}
+
+function timeEl(iso, className) {
+  const node = el('time', className, relativeTime(iso));
+  node.dateTime = iso;
+  node.title = new Date(iso).toLocaleString();
+  return node;
+}
+
+function tickTimes() {
+  document.querySelectorAll('time[datetime]').forEach((t) => { t.textContent = relativeTime(t.dateTime); });
+  renderSessions();
+}
+
+function dayLabel(iso) {
+  const d = new Date(iso);
+  const yesterday = new Date(Date.now() - 86_400_000);
+  if (d.toDateString() === new Date().toDateString()) return 'Today';
+  if (d.toDateString() === yesterday.toDateString()) return 'Yesterday';
+  return d.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' });
+}
+
 // ---------- small helpers ----------
 
 let toastTimer = null;
@@ -518,19 +729,6 @@ function toast(text) {
   toastTimer = setTimeout(() => { node.hidden = true; }, 5000);
 }
 
-function timeLabel(iso) {
-  return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-}
-
-function dayLabel(iso) {
-  const d = new Date(iso);
-  const today = new Date();
-  const yesterday = new Date(Date.now() - 86_400_000);
-  if (d.toDateString() === today.toDateString()) return 'Today';
-  if (d.toDateString() === yesterday.toDateString()) return 'Yesterday';
-  return d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });
-}
-
 // ---------- start ----------
 
 $('composer').addEventListener('submit', sendMessage);
@@ -539,6 +737,7 @@ $('input').addEventListener('input', autosize);
 $('stop-btn').addEventListener('click', stopCurrent);
 $('term-btn').addEventListener('click', toggleTerminal);
 $('term-refresh').addEventListener('click', refreshTerminal);
+$('chat-approval').addEventListener('click', focusApproval);
 $('new-btn').addEventListener('click', openStartDialog);
 $('start-form').addEventListener('submit', submitStart);
 $('start-cancel').addEventListener('click', () => $('start-dialog').close());
@@ -552,10 +751,12 @@ window.addEventListener('hashchange', route);
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden && events?.readyState === EventSource.CLOSED) connectEvents();
 });
+setInterval(tickTimes, 60_000);
 
 try {
   await api('/api/whoami'); // redirects to the login page if not signed in
   await loadSessions();
+  await loadPermissions();
   route();
   connectEvents();
 } catch (e) {

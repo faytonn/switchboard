@@ -106,8 +106,16 @@ Claude Code channels, and every message is stored in Postgres.
   with "remember me". A password change invalidates all cookies (stamp claim). Login is
   rate-limited to 5 tries a minute per address.
 - Cookie-authenticated writes need the `X-Switchboard` header (CSRF guard); bearer calls don't.
-- Live updates: `GET /api/events` (SSE): `hello`, `message`, `delivered`, `sessions`, `ping`.
-  Events are hints; the page reloads from the API on every (re)connect.
+- Live updates: `GET /api/events` (SSE): `hello`, `message`, `delivered`, `sessions`,
+  `activity`, `permission`, `permission-decided`, `ping`. Events are hints; the page reloads
+  from the API on every (re)connect.
+- `ActivityMonitor` reads each running session's screen every 2s: `working` when Claude Code's
+  footer says "esc to interrupt", `approval` when a "Do you want to…" prompt is open (also
+  catches sessions whose channel server can't relay prompts), else `idle`.
+- Session colours: a hash of the id picks one of 8 palette classes (`.c0`-`.c7`). Never set
+  colours with style attributes (CSP).
+- UI screenshots: run a test hub on port 7701 against the `switchboard_test` database with the
+  `sb-test` tmux session, and drive headless Edge over CDP from Windows node.
 - Phone access: `tailscale serve` on Windows proxies to `127.0.0.1:7700`, which WSL's
   localhost forwarding passes to the hub. The hub stays bound to loopback. Never use
   `tailscale funnel` (that would put it on the public internet).

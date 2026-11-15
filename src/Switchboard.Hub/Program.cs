@@ -13,6 +13,9 @@ var connectionString = Environment.GetEnvironmentVariable("SWITCHBOARD_DB")
     ?? throw new InvalidOperationException("SWITCHBOARD_DB is not set. Start the hub with scripts/run-hub.sh.");
 
 var builder = WebApplication.CreateBuilder(args);
+// ASP.NET Core logs two lines per request at Information. With the UI's live connection and the
+// terminal view refreshing, that drowns out the hub's own log; keep only its warnings.
+builder.Logging.AddFilter("Microsoft.AspNetCore", LogLevel.Warning);
 // Loopback only. Your phone reaches it through `tailscale serve` on Windows, which forwards
 // to localhost; nothing on your Wi-Fi can connect to this port directly.
 builder.WebHost.UseUrls(options.Url);
@@ -26,6 +29,8 @@ builder.Services.AddSingleton<HubEvents>();
 builder.Services.AddSingleton<ChannelHub>();
 builder.Services.AddSingleton<PermissionStore>();
 builder.Services.AddSingleton<PermissionService>();
+builder.Services.AddSingleton<ActivityMonitor>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<ActivityMonitor>());
 builder.Services.AddSingleton<SessionService>();
 builder.Services.AddSingleton<AgentAuthFilter>();
 builder.Services.AddOwnerLogin(options);
