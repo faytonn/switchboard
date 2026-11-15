@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Runs the Switchboard CLI from source. `dotnet run` rebuilds first if the code changed.
+# Usage: ./sb <command> [args...]   (run ./sb with no arguments for help)
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec dotnet run --project "$here/src/Switchboard.Cli" --verbosity quiet -- "$@"

@@ -1,0 +1,3 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Shared library: tmux control now, database access from phase 2. -->
+</Project>
