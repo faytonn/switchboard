@@ -24,6 +24,8 @@ builder.Services.AddSingleton<MessageStore>();
 builder.Services.AddSingleton(TmuxClient.FromEnvironment());
 builder.Services.AddSingleton<HubEvents>();
 builder.Services.AddSingleton<ChannelHub>();
+builder.Services.AddSingleton<PermissionStore>();
+builder.Services.AddSingleton<PermissionService>();
 builder.Services.AddSingleton<SessionService>();
 builder.Services.AddSingleton<AgentAuthFilter>();
 builder.Services.AddOwnerLogin(options);
@@ -175,5 +177,16 @@ api.MapGet("/channel", async (HttpContext ctx, ChannelHub hub) =>
 // The channel server's reply tool posts here.
 api.MapPost("/channel/reply", (ReplyRequest req, HttpContext ctx, SessionService svc) =>
     svc.ReplyAsync(Caller.From(ctx), req, ctx.RequestAborted));
+
+// Permission relay. The channel server reports a tool prompt; the owner answers it.
+api.MapPost("/channel/permission-request", (PermissionRequestReport report, HttpContext ctx, PermissionService svc) =>
+    svc.ReportAsync(Caller.From(ctx), report, ctx.RequestAborted));
+
+api.MapGet("/permissions", (HttpContext ctx, PermissionService svc) =>
+    svc.PendingAsync(Caller.From(ctx), ctx.RequestAborted));
+
+api.MapPost("/sessions/{id}/permissions/{requestId}",
+    (string id, string requestId, PermissionDecisionRequest req, HttpContext ctx, PermissionService svc) =>
+        svc.DecideAsync(Caller.From(ctx), id, requestId, req, ctx.RequestAborted));
 
 app.Run();

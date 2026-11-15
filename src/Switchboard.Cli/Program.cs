@@ -23,6 +23,9 @@ try
         ["stop", var id, .. var opts] => await Stop(id, opts),
         ["log", var id, .. var opts] => await Log(id, opts),
         ["search", .. var words] when words.Length > 0 => await Search(words),
+        ["perms"] => await Perms(),
+        ["allow", var id, var requestId] => await Decide(id, requestId, "allow"),
+        ["deny", var id, var requestId] => await Decide(id, requestId, "deny"),
         ["passwd"] => Passwd(),
         ["trust", var id, .. var opts] => await Trust(id, opts),
         ["keys", var id, .. var keys] when keys.Length > 0 => await Keys(id, keys),
@@ -140,6 +143,40 @@ static async Task<int> Search(string[] words)
     var found = (await hub.GetAsync(path)).EnumerateArray().ToList();
     Console.WriteLine(found.Count == 0 ? $"No messages match \"{query}\"." : $"{found.Count} match(es), best first:");
     found.ForEach(PrintMessage);
+    return 0;
+}
+
+static async Task<int> Perms()
+{
+    using var hub = new HubApi();
+    var pending = (await hub.GetAsync("api/permissions")).EnumerateArray().ToList();
+    if (pending.Count == 0)
+    {
+        Console.WriteLine("No tool prompts waiting.");
+        return 0;
+    }
+
+    foreach (var p in pending)
+    {
+        var session = p.GetProperty("sessionId").GetString();
+        var requestId = p.GetProperty("requestId").GetString();
+        Console.WriteLine($"{session} wants {p.GetProperty("toolName").GetString()}: {p.GetProperty("description").GetString()}");
+        foreach (var line in (p.GetProperty("inputPreview").GetString() ?? "").Split('\n'))
+        {
+            Console.WriteLine($"    {line}");
+        }
+
+        Console.WriteLine($"  answer: ./sb allow {session} {requestId}   or   ./sb deny {session} {requestId}");
+    }
+
+    return 0;
+}
+
+static async Task<int> Decide(string id, string requestId, string behavior)
+{
+    using var hub = new HubApi();
+    await hub.PostAsync($"api/sessions/{id}/permissions/{requestId}", new { behavior });
+    Console.WriteLine($"{(behavior == "allow" ? "Allowed" : "Denied")} {requestId} for '{id}'.");
     return 0;
 }
 
@@ -311,6 +348,9 @@ static int Usage()
           sb log    <id> [--limit N]   messages sent to or by a session (default 20)
           sb search <words...> [--session id] [--limit N]
                                        search all messages (default 10)
+          sb perms                     list tool prompts (Bash, Write, ...) waiting for you
+          sb allow  <id> <request-id>  approve one of them
+          sb deny   <id> <request-id>  refuse one of them
           sb passwd                    set the web UI login password (stored hashed in .env)
 
         Debug (straight to tmux, for a stuck session):

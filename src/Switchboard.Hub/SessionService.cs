@@ -21,6 +21,7 @@ public sealed class SessionService(
     MessageStore messages,
     ChannelHub channels,
     HubEvents events,
+    PermissionService permissions,
     ILogger<SessionService> log)
 {
     // MCP server names inside a session. Claude Code names their tools after them, e.g.
@@ -82,6 +83,8 @@ public sealed class SessionService(
         // Order matters: the database row first (status 'starting'), then tmux. If anything
         // fails, we close the window and mark the row stopped.
         await sessions.MarkStartingAsync(req.Id, projectDir, tmux.DisplayTarget(req.Id), role, Tokens.Hash(token), ct: ct);
+        // Prompts left over from a previous run of this id belong to a Claude Code that's gone.
+        await permissions.ExpireForSessionAsync(req.Id, ct);
         IReadOnlyList<ClaudeDialog> answered;
         try
         {
@@ -219,6 +222,7 @@ public sealed class SessionService(
         }
 
         await sessions.MarkStoppedAsync(id, ct);
+        await permissions.ExpireForSessionAsync(id, ct);
         DeleteConfig(id);
         log.LogInformation("{Caller} stopped session {Id}", caller.Describe(), id);
         events.Publish("sessions", new { id });

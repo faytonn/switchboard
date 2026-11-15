@@ -19,6 +19,7 @@ const state = {
   current: null,        // id of the open session
   messages: [],         // history of the open session, oldest first
   unread: new Map(),    // session id -> replies to you not seen yet
+  permissions: [],      // tool prompts waiting for you, all sessions
   showStopped: false,
   terminalTimer: null,
 };
@@ -83,8 +84,15 @@ function renderSessions() {
     meta.append(status.text, ' · ', s.projectDir);
 
     link.append(dot, name);
+    // A waiting tool prompt matters more than unread replies: the session is blocked on you.
+    const waiting = state.permissions.filter((p) => p.sessionId === s.id).length;
     const unread = state.unread.get(s.id) ?? 0;
-    link.append(unread > 0 ? el('span', 'badge', String(unread)) : el('span'));
+    if (waiting > 0) {
+      const badge = el('span', 'badge warn', `${waiting} to approve`);
+      link.append(badge);
+    } else {
+      link.append(unread > 0 ? el('span', 'badge', String(unread)) : el('span'));
+    }
     link.append(meta);
     list.append(link);
   }
@@ -102,6 +110,7 @@ async function openSession(id) {
   closeTerminal();
   renderSessions();
   renderChatHeader();
+  renderApprovals();
   state.messages = [];
   $('messages').replaceChildren(el('p', 'empty', 'Loading…'));
   try {
@@ -120,6 +129,7 @@ function closeSession() {
   $('placeholder').hidden = false;
   $('chat-bar').hidden = true;
   $('composer').hidden = true;
+  $('approvals').hidden = true;
   $('messages').replaceChildren();
   closeTerminal();
   renderSessions();
@@ -257,6 +267,113 @@ async function stopCurrent() {
   }
 }
 
+// ---------- permission prompts ----------
+// When a session wants to run a tool its permission mode doesn't allow (a Bash command in
+// acceptEdits, say), Claude Code shows a prompt in the terminal AND relays it here. Whichever
+// answer comes first wins: the terminal dialog closes when you tap Allow or Deny here.
+
+async function loadPermissions() {
+  state.permissions = await api('/api/permissions');
+  renderApprovals();
+  renderSessions();
+  updateTitle();
+}
+
+function renderApprovals() {
+  const box = $('approvals');
+  const mine = state.permissions.filter((p) => p.sessionId === state.current);
+  box.hidden = mine.length === 0;
+  box.replaceChildren(...mine.map(approvalEl));
+}
+
+function approvalEl(p) {
+  const card = el('div', 'approval');
+  const head = el('div', 'approval-head');
+  head.append(el('span', 'tool', p.toolName), el('span', null, 'wants your approval'), el('span', 'when', timeLabel(p.createdAt)));
+  card.append(head);
+  if (p.description) card.append(el('div', 'approval-desc', p.description));
+  // What the tool will do. Read it before allowing.
+  card.append(el('pre', null, previewText(p.inputPreview)));
+
+  const actions = el('div', 'approval-actions');
+  const dismiss = el('button', 'link', 'Dismiss');
+  dismiss.type = 'button';
+  dismiss.title = 'Hide this without answering (for example, if you answered in the terminal)';
+  const deny = el('button', 'deny', 'Deny');
+  deny.type = 'button';
+  const allow = el('button', 'allow', 'Allow');
+  allow.type = 'button';
+  const buttons = [dismiss, deny, allow];
+  const decide = async (behavior) => {
+    buttons.forEach((b) => { b.disabled = true; });
+    try {
+      await api(`/api/sessions/${encodeURIComponent(p.sessionId)}/permissions/${p.requestId}`, {
+        method: 'POST',
+        body: { behavior },
+      });
+      removePermission(p.sessionId, p.requestId);
+    } catch (e) {
+      toast(e.message);
+      buttons.forEach((b) => { b.disabled = false; });
+      loadPermissions().catch(() => {});
+    }
+  };
+  dismiss.addEventListener('click', () => decide('dismiss'));
+  deny.addEventListener('click', () => decide('deny'));
+  allow.addEventListener('click', () => decide('allow'));
+  actions.append(...buttons);
+  card.append(actions, el('p', 'hint', 'Applies to this one call only.'));
+  return card;
+}
+
+// Claude Code sends the tool's arguments as JSON text. For a shell command, show just the
+// command; otherwise pretty-print. If it isn't valid JSON (it may be cut off at 3,500
+// characters), show it exactly as received.
+function previewText(raw) {
+  try {
+    const args = JSON.parse(raw);
+    if (typeof args?.command === 'string') return args.command;
+    return JSON.stringify(args, null, 2);
+  } catch {
+    return raw;
+  }
+}
+
+function onPermissionEvent(p) {
+  state.permissions = state.permissions.filter((x) => !(x.sessionId === p.sessionId && x.requestId === p.requestId));
+  state.permissions.push(p);
+  renderApprovals();
+  renderSessions();
+  updateTitle();
+  if (p.sessionId !== state.current) toast(`${p.sessionId} wants to use ${p.toolName}. Open it to approve.`);
+  navigator.vibrate?.(200); // a buzz on Android phones; ignored elsewhere
+}
+
+function onPermissionDecidedEvent({ sessionId, requestId }) {
+  // requestId null = all of that session's prompts expired (it stopped or restarted).
+  if (requestId === null) {
+    state.permissions = state.permissions.filter((x) => x.sessionId !== sessionId);
+    renderApprovals();
+    renderSessions();
+    updateTitle();
+  } else {
+    removePermission(sessionId, requestId);
+  }
+}
+
+function removePermission(sessionId, requestId) {
+  state.permissions = state.permissions.filter((x) => !(x.sessionId === sessionId && x.requestId === requestId));
+  renderApprovals();
+  renderSessions();
+  updateTitle();
+}
+
+// "(2) Switchboard" in the tab title, so a waiting prompt shows even in another tab.
+function updateTitle() {
+  const n = state.permissions.length;
+  document.title = n > 0 ? `(${n}) Switchboard` : 'Switchboard';
+}
+
 // ---------- terminal peek ----------
 // Shows the session's tmux screen as text: the way to see a permission prompt or a dialog
 // the session is stuck on, which never shows up as a message.
@@ -347,6 +464,8 @@ function connectEvents() {
   events.addEventListener('message', (e) => onMessageEvent(JSON.parse(e.data)));
   events.addEventListener('delivered', (e) => onDeliveredEvent(JSON.parse(e.data)));
   events.addEventListener('sessions', () => loadSessions().catch(() => {}));
+  events.addEventListener('permission', (e) => onPermissionEvent(JSON.parse(e.data)));
+  events.addEventListener('permission-decided', (e) => onPermissionDecidedEvent(JSON.parse(e.data)));
   events.onerror = () => {
     setConnected(false);
     // The browser retries by itself after network errors, but gives up for good after an
@@ -366,6 +485,7 @@ function setConnected(on) {
 async function refreshAll() {
   try {
     await loadSessions();
+    await loadPermissions();
     if (state.current) {
       state.messages = await api(`/api/sessions/${encodeURIComponent(state.current)}/messages?limit=200`);
       renderMessages();

@@ -14,6 +14,7 @@
   --in: #ffffff;
   --side: #eef0f4;
   --live: #1f9d63;
+  --on-live: #ffffff;
   --warn: #c98a12;
   --bad: #cf3d3d;
   --off: #9aa1ad;
@@ -40,6 +41,7 @@
     --in: #1d2129;
     --side: #171a20;
     --live: #5ed19a;
+    --on-live: #0d0f13;
     --warn: #e3b04b;
     --bad: #ff7b7b;
     --off: #646c7a;
@@ -193,6 +195,35 @@ body.in-chat .chat { display: flex; }
   border: 1px solid var(--border); background: var(--bg);
 }
 .composer button { padding: 10px 16px; }
+
+/* ---------- permission prompts ---------- */
+
+.approvals {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 10px 12px; max-height: 50vh; overflow-y: auto;
+  border-top: 1px solid var(--border); background: var(--panel-2);
+}
+.approval {
+  background: var(--panel); border: 1px solid var(--warn); border-radius: 12px;
+  padding: 12px; display: flex; flex-direction: column; gap: 8px;
+}
+.approval-head { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.approval-head .tool { font-weight: 700; }
+.approval-head .when { margin-left: auto; color: var(--muted); font-size: 12px; }
+.approval-desc { font-size: 14px; color: var(--muted); }
+.approval pre {
+  margin: 0; padding: 8px 10px; border-radius: 8px; max-height: 30vh; overflow: auto;
+  background: var(--term-bg); color: var(--term-text);
+  font: 12.5px/1.4 ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.approval-actions { display: flex; gap: 8px; align-items: center; }
+.approval-actions .link { margin-right: auto; color: var(--muted); }
+.approval-actions button.deny { background: transparent; color: var(--bad); border: 1px solid var(--bad); }
+.approval-actions button.allow { background: var(--live); color: var(--on-live); }
+.approval-actions button { min-width: 84px; padding: 10px 14px; }
+.approval .hint { font-size: 12px; color: var(--muted); margin: 0; }
+.badge.warn { background: var(--warn); color: #1b1300; }
 
 /* ---------- terminal ---------- */
 

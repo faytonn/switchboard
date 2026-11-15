@@ -32,7 +32,15 @@ var options = new McpServerOptions
         // This key makes Claude Code listen for our notifications/claude/channel events. Its
         // value must be {}. A JsonElement, because the SDK serializes capabilities with its own
         // source-generated types and can't serialize an anonymous object here.
-        Experimental = new Dictionary<string, object> { ["claude/channel"] = JsonDocument.Parse("{}").RootElement },
+        Experimental = new Dictionary<string, object>
+        {
+            ["claude/channel"] = JsonDocument.Parse("{}").RootElement,
+            // Permission relay: Claude Code also sends us its tool prompts (Bash, Write, ...)
+            // and accepts an allow/deny back. The channels docs say to declare this only if
+            // the channel authenticates who answers. Ours does: only the owner, logged in to
+            // the hub, can answer.
+            ["claude/channel/permission"] = JsonDocument.Parse("{}").RootElement,
+        },
     },
 
     // Claude reads this when the server connects. It is the only place that explains what
@@ -68,6 +76,13 @@ var options = new McpServerOptions
             new(NotificationMethods.InitializedNotification, (_, _) =>
             {
                 initialized.TrySetResult();
+                return ValueTask.CompletedTask;
+            }),
+            // A tool prompt is open in the terminal. Hand it to the hub without blocking the
+            // MCP message loop (a slow hub mustn't hold up other messages).
+            new("notifications/claude/channel/permission_request", (notification, ct) =>
+            {
+                _ = link.ReportPermissionRequestAsync(notification.Params);
                 return ValueTask.CompletedTask;
             }),
         ],

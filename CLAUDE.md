@@ -78,6 +78,24 @@ Claude Code channels, and every message is stored in Postgres.
   session that has messaged the caller.
 - MCP stdio servers must write logs to stderr only. stdout is the protocol.
 
+## Permission relay
+
+- The channel server also declares `claude/channel/permission`. Claude Code then sends it
+  `notifications/claude/channel/permission_request` (`request_id` = 5 letters `[a-km-z]`,
+  `tool_name`, `description`, `input_preview` = tool arguments as JSON text). The channel
+  server posts it to `POST /api/channel/permission-request`; the hub stores it in
+  `permission_requests` and pushes an SSE `permission` event.
+- Only the owner answers (`POST /api/sessions/{id}/permissions/{requestId}`, behavior
+  allow|deny|dismiss), never the manager. The hub claims the decision with a conditional
+  UPDATE (first answer wins), sends `{type:"permission"}` down the WebSocket, and the channel
+  server emits `notifications/claude/channel/permission`. If the channel is offline the
+  decision is undone and the owner gets 409.
+- The terminal prompt stays open in parallel; whichever answer comes first wins, and Claude
+  Code drops the other silently. That's why the UI has Dismiss. Stopping or restarting a
+  session expires its waiting prompts.
+- Safe read-only commands (like `date`) never prompt, so test with something that writes
+  outside the project (e.g. `touch /tmp/x`).
+
 ## Web UI
 
 - Static files in `src/Switchboard.Hub/wwwroot` (plain HTML/CSS/JS, no build step). Put session

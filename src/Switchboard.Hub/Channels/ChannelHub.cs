@@ -64,6 +64,29 @@ public sealed class ChannelHub(MessageStore messages, HubEvents events, ILogger<
         }
     }
 
+    /// <summary>
+    /// Sends the owner's Allow/Deny for a permission prompt to the session's channel server.
+    /// Returns false if the session isn't connected. No ack here: Claude Code doesn't confirm
+    /// verdicts either, and silently drops one for a prompt already answered in the terminal.
+    /// </summary>
+    public async Task<bool> SendPermissionAsync(string sessionId, string requestId, string behavior, CancellationToken ct)
+    {
+        if (!_connections.TryGetValue(sessionId, out var conn))
+        {
+            return false;
+        }
+
+        try
+        {
+            await SendAsync(conn, new { type = "permission", requestId, behavior }, ct);
+            return true;
+        }
+        catch (WebSocketException)
+        {
+            return false;
+        }
+    }
+
     public async Task<bool> WaitForConnectionAsync(string sessionId, TimeSpan timeout, CancellationToken ct)
     {
         var deadline = DateTimeOffset.UtcNow + timeout;

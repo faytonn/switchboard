@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
@@ -79,32 +80,69 @@ public sealed class HubLink(Uri hubUrl, string token, string sessionId, HttpClie
                 continue;
             }
 
-            var message = JsonSerializer.Deserialize<HubMessage>(frame.ToArray(), Json);
+            var hubFrame = JsonSerializer.Deserialize<HubFrame>(frame.ToArray(), Json);
             frame.SetLength(0);
-            if (message is not { Type: "message" })
+            switch (hubFrame)
             {
-                continue;
-            }
+                case { Type: "message" }:
+                    await PushAsync(server, hubFrame, ct);
+                    // Ack only after the push is written to Claude Code. If we die before this
+                    // line, the hub sends the message again when we reconnect.
+                    var ack = JsonSerializer.SerializeToUtf8Bytes(new { type = "ack", id = hubFrame.Id }, Json);
+                    await ws.SendAsync(ack, WebSocketMessageType.Text, endOfMessage: true, ct);
+                    break;
 
-            await PushAsync(server, message, ct);
-            // Ack only after the push is written to Claude Code. If we die before this line,
-            // the hub sends the message again when we reconnect.
-            var ack = JsonSerializer.SerializeToUtf8Bytes(new { type = "ack", id = message.Id }, Json);
-            await ws.SendAsync(ack, WebSocketMessageType.Text, endOfMessage: true, ct);
+                case { Type: "permission", RequestId: { } requestId, Behavior: "allow" or "deny" }:
+                    // The owner's answer to a tool prompt. Claude Code applies it to that one
+                    // tool call, closes the terminal dialog, and ignores later answers to it.
+                    await server.SendNotificationAsync(
+                        "notifications/claude/channel/permission",
+                        new { request_id = requestId, behavior = hubFrame.Behavior },
+                        Json,
+                        ct);
+                    Log($"sent verdict {hubFrame.Behavior} for {requestId}");
+                    break;
+            }
         }
     }
 
-    private static Task PushAsync(McpServer server, HubMessage message, CancellationToken ct) =>
+    /// <summary>
+    /// Claude Code is showing a tool prompt and relayed it to us: pass it to the hub, which shows
+    /// it on the owner's phone. If this fails, the prompt still waits in the terminal.
+    /// </summary>
+    public async Task ReportPermissionRequestAsync(JsonNode? parameters)
+    {
+        try
+        {
+            var report = new
+            {
+                requestId = (string?)parameters?["request_id"],
+                toolName = (string?)parameters?["tool_name"],
+                description = (string?)parameters?["description"],
+                inputPreview = (string?)parameters?["input_preview"],
+            };
+            using var response = await http.PostAsJsonAsync(new Uri(hubUrl, "api/channel/permission-request"), report, Json);
+            Log(response.IsSuccessStatusCode
+                ? $"relayed permission prompt {report.requestId} ({report.toolName})"
+                : $"hub refused permission prompt {report.requestId}: HTTP {(int)response.StatusCode}");
+        }
+        catch (Exception e)
+        {
+            Log($"couldn't relay permission prompt: {e.Message}");
+        }
+    }
+
+    private static Task PushAsync(McpServer server, HubFrame message, CancellationToken ct) =>
         // Claude Code shows this as <channel source="switchboard-channel" from="…" message_id="…">.
         // Meta keys must be letters, digits and underscores, or Claude Code drops them silently.
         server.SendNotificationAsync(
             "notifications/claude/channel",
             new
             {
-                content = message.Text,
+                content = message.Text ?? "",
                 meta = new Dictionary<string, string>
                 {
-                    ["from"] = message.From,
+                    ["from"] = message.From ?? "owner",
                     ["message_id"] = message.Id.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 },
             },
@@ -158,5 +196,6 @@ public sealed class HubLink(Uri hubUrl, string token, string sessionId, HttpClie
 
     private void Log(string text) => Console.Error.WriteLine($"switchboard-channel[{sessionId}]: {text}");
 
-    private sealed record HubMessage(string Type, long Id, string From, string Text);
+    // Frames from the hub: {type:"message", id, from, text} or {type:"permission", requestId, behavior}.
+    private sealed record HubFrame(string Type, long Id, string? From, string? Text, string? RequestId, string? Behavior);
 }
