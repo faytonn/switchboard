@@ -30,9 +30,6 @@ public static partial class ClaudeCommand
     /// <summary>The choices `claude --help` lists for --effort.</summary>
     public static readonly IReadOnlyList<string> EffortLevels = ["low", "medium", "high", "xhigh", "max"];
 
-    /// <summary>What Claude Code prints (then exits) when --continue finds nothing to resume.</summary>
-    public const string NoConversationToContinue = "No conversation found to continue";
-
     /// <summary>Model aliases Claude Code resolves to the latest model of that family.</summary>
     public static readonly IReadOnlyList<string> ModelAliases = ["opus", "sonnet", "haiku", "fable"];
 

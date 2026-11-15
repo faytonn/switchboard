@@ -83,11 +83,11 @@ public sealed class SessionService(
         {
             response = await StartLockedAsync(req, role, launch, projectDir, guessedIcon, ct);
         }
-        catch (NoConversationException)
+        catch (ResumeFailedException)
         {
-            // --continue found nothing to resume (a new folder, or Claude's history was cleared).
-            // That's not a crash: start a fresh conversation instead.
-            log.LogInformation("No conversation to resume for {Id}; starting fresh", req.Id);
+            // --continue couldn't resume (a new folder has nothing to resume). That's not a
+            // crash: start a fresh conversation instead.
+            log.LogInformation("Couldn't resume the conversation for {Id}; starting fresh", req.Id);
             response = await StartLockedAsync(req, role, launch with { Continue = false }, projectDir, guessedIcon, ct);
         }
 
@@ -105,7 +105,7 @@ public sealed class SessionService(
     /// <summary>Raised when the owner or the manager stops a session on purpose.</summary>
     public event Action<string>? StoppedOnPurpose;
 
-    private sealed class NoConversationException() : Exception("No conversation to continue.");
+    private sealed class ResumeFailedException() : Exception("Couldn't resume the previous conversation.");
 
     // The actual start, with the session's lock held by the caller.
     private async Task<StartSessionResponse> StartLockedAsync(
@@ -161,32 +161,21 @@ public sealed class SessionService(
         }
         catch (Exception e)
         {
-            // Read the screen before cleaning up: cleanup closes the window.
-            var noConversation = e is TmuxException && launch.Continue && await ExitedForLackOfConversationAsync(req.Id);
+            // Claude Code died during a resumed start. Usually that's "No conversation found to
+            // continue" (nothing to resume in this folder), but we can't read that reliably:
+            // tmux keeps no output from a program that exits this fast. Whatever the reason, a
+            // fresh start is the right recovery, so let the caller retry without --continue.
+            var resumeFailed = e is TmuxException && launch.Continue && (await tmux.FindAsync(req.Id))?.Dead == true;
             await CleanUpFailedStartAsync(req.Id);
-            if (noConversation)
+            if (resumeFailed)
             {
-                throw new NoConversationException();
+                throw new ResumeFailedException();
             }
 
             throw;
         }
 
         return new StartSessionResponse(await GetInfoAsync(req.Id, ct), answered.Select(d => d.Name).ToList(), launch.Continue);
-    }
-
-    // Claude Code exited at once. Was it "No conversation found to continue"? The window is kept
-    // after exit (remain-on-exit), so its last words are still readable.
-    private async Task<bool> ExitedForLackOfConversationAsync(string id)
-    {
-        try
-        {
-            return (await tmux.ReadAsync(id, check: false)).Contains(ClaudeCommand.NoConversationToContinue, StringComparison.Ordinal);
-        }
-        catch (TmuxException)
-        {
-            return false;
-        }
     }
 
     /// <summary>

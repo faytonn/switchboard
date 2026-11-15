@@ -100,7 +100,9 @@ Claude Code channels, and every message is stored in Postgres.
   the row becomes `crashed` and only the owner restarts it (`POST /api/sessions/{id}/restart`,
   `sb restart`, UI Restart). Once a day, when idle 10 min, it starts the manager fresh.
 - `claude --continue` with no previous conversation prints "No conversation found to continue"
-  and exits 1; `SessionService` then starts fresh (not counted as a crash).
+  and exits 1. `SessionService` retries any resumed start that dies during startup without
+  `--continue` (not counted as a crash). Don't detect this by reading the screen: tmux keeps no
+  output from a program that exits that fast (the dead pane only shows "Pane is dead").
 - `scripts/serve.sh` is the single always-on entry point (waits for Postgres, builds, runs the
   hub). Windows runs it from a logon task (`deploy/windows/install-task.ps1`); a Linux server
   would use `deploy/systemd/switchboard-hub.service`. See `deploy/README.md`.

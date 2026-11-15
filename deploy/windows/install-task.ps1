@@ -15,7 +15,8 @@ $repo = (Resolve-Path "$PSScriptRoot\..\..").Path
 $repoInWsl = (wsl.exe -d $Distro -e wslpath -a ($repo -replace '\\', '/')).Trim()
 
 # bash -lc: a login shell, so ~/.profile sets PATH. The log lives in WSL, not on the Windows disk.
-$command = "exec '$repoInWsl/scripts/serve.sh' --log `"`$HOME/.switchboard/hub.log`""
+# No double quotes inside: this string is itself double-quoted on the wsl.exe command line.
+$command = "exec '$repoInWsl/scripts/serve.sh' --log ~/.switchboard/hub.log"
 $action = New-ScheduledTaskAction -Execute "conhost.exe" `
     -Argument "--headless wsl.exe -d $Distro --exec bash -lc `"$command`""
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
